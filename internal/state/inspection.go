@@ -22,9 +22,8 @@ type Inspection struct {
 }
 
 // InspectSnapshot authenticates the complete reachable object graph and returns
-// the metadata required for durable publication. Chunk-list traversal is
-// deliberately rejected until the large-file chunk format is implemented, so a
-// state can never be published with untracked reachable chunks.
+// the metadata required for durable publication, including chunks referenced by
+// large-file chunk lists.
 func InspectSnapshot(cas InspectableObjectStore, root store.ObjectID) (Inspection, error) {
 	if cas == nil {
 		return Inspection{}, fmt.Errorf("snapshot CAS is required")
@@ -80,21 +79,7 @@ func inspectTree(
 	for _, entry := range tree.Entries {
 		switch entry.Kind {
 		case EntryFile:
-			child, err := cas.GetObject(entry.ObjectID)
-			if err != nil {
-				return Verification{}, fmt.Errorf("load file object %s: %w", entry.ObjectID, err)
-			}
-			switch child.Kind {
-			case store.ObjectBlob:
-				if int64(len(child.Payload)) != entry.Size {
-					return Verification{}, fmt.Errorf("file object %s size = %d, tree declares %d", entry.ObjectID, len(child.Payload), entry.Size)
-				}
-			case store.ObjectChunkList:
-				return Verification{}, fmt.Errorf("chunk-list object %s cannot be published before chunk traversal is implemented", entry.ObjectID)
-			default:
-				return Verification{}, fmt.Errorf("file object %s kind = %q", entry.ObjectID, child.Kind)
-			}
-			if err := addInspectedObject(cas, entry.ObjectID, child.Kind, objects); err != nil {
+			if err := inspectFileObject(cas, entry.ObjectID, entry.Size, objects); err != nil {
 				return Verification{}, err
 			}
 			result.Files++
@@ -132,6 +117,57 @@ func inspectTree(
 		}
 	}
 	return result, nil
+}
+
+func inspectFileObject(
+	cas InspectableObjectStore,
+	id store.ObjectID,
+	declaredSize int64,
+	objects map[store.ObjectID]store.ObjectMetadata,
+) error {
+	child, err := cas.GetObject(id)
+	if err != nil {
+		return fmt.Errorf("load file object %s: %w", id, err)
+	}
+
+	switch child.Kind {
+	case store.ObjectBlob:
+		if int64(len(child.Payload)) != declaredSize {
+			return fmt.Errorf("file object %s size = %d, tree declares %d", id, len(child.Payload), declaredSize)
+		}
+		return addInspectedObject(cas, id, store.ObjectBlob, objects)
+
+	case store.ObjectChunkList:
+		list, err := DecodeChunkList(child.Payload)
+		if err != nil {
+			return fmt.Errorf("parse chunk-list object %s: %w", id, err)
+		}
+		if list.Size != declaredSize {
+			return fmt.Errorf("chunk-list object %s size = %d, tree declares %d", id, list.Size, declaredSize)
+		}
+		if err := addInspectedObject(cas, id, store.ObjectChunkList, objects); err != nil {
+			return err
+		}
+		for index, ref := range list.Chunks {
+			chunk, err := cas.GetObject(ref.ObjectID)
+			if err != nil {
+				return fmt.Errorf("load chunk %d %s: %w", index, ref.ObjectID, err)
+			}
+			if chunk.Kind != store.ObjectBlob {
+				return fmt.Errorf("chunk %d %s kind = %q, want %q", index, ref.ObjectID, chunk.Kind, store.ObjectBlob)
+			}
+			if len(chunk.Payload) != int(ref.Size) {
+				return fmt.Errorf("chunk %d %s size = %d, list declares %d", index, ref.ObjectID, len(chunk.Payload), ref.Size)
+			}
+			if err := addInspectedObject(cas, ref.ObjectID, store.ObjectBlob, objects); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("file object %s kind = %q", id, child.Kind)
+	}
 }
 
 func addInspectedObject(
