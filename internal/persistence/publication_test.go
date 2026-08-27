@@ -3,6 +3,7 @@ package persistence
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,12 +57,11 @@ func TestCreateSessionAndPublishInitialSnapshotAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewState() error = %v", err)
 	}
-	inspection, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
+	published, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
 		StateID:     stateID,
 		SessionID:   sessionID,
 		RootTreeID:  snapshot.RootTreeID,
 		Role:        SnapshotInitial,
-		EventSeq:    1,
 		WallTimeUTC: started.Add(time.Second),
 		MonotonicNS: 1_000_000,
 		Source:      "replay.core",
@@ -69,21 +69,25 @@ func TestCreateSessionAndPublishInitialSnapshotAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishSnapshot() error = %v", err)
 	}
-	if len(inspection.Objects) != 2 {
-		t.Fatalf("reachable object count = %d, want 2", len(inspection.Objects))
+	if published.Event.Seq != 1 || published.Event.StateAfter != stateID.String() {
+		t.Fatalf("published event = %+v", published.Event)
+	}
+	if len(published.Inspection.Objects) != 2 {
+		t.Fatalf("reachable object count = %d, want 2", len(published.Inspection.Objects))
 	}
 
 	var initialState, level string
+	var nextSeq int64
 	if err := db.sql.QueryRowContext(ctx,
-		"SELECT initial_state_id, reproducibility_level FROM sessions WHERE id = ?", sessionID.String(),
-	).Scan(&initialState, &level); err != nil {
+		"SELECT initial_state_id, reproducibility_level, next_event_seq FROM sessions WHERE id = ?", sessionID.String(),
+	).Scan(&initialState, &level, &nextSeq); err != nil {
 		t.Fatalf("read session: %v", err)
 	}
 	if initialState != stateID.String() {
 		t.Fatalf("initial_state_id = %q, want %q", initialState, stateID)
 	}
-	if level != "R1" {
-		t.Fatalf("reproducibility_level = %q, want R1", level)
+	if level != "R1" || nextSeq != 2 {
+		t.Fatalf("session level/next seq = %s/%d, want R1/2", level, nextSeq)
 	}
 
 	var stateCount, objectCount, edgeCount, eventCount int
@@ -105,8 +109,8 @@ func TestCreateSessionAndPublishInitialSnapshotAtomically(t *testing.T) {
 	if stateCount != 1 || eventCount != 1 {
 		t.Fatalf("state/event counts = %d/%d, want 1/1", stateCount, eventCount)
 	}
-	if objectCount != len(inspection.Objects) || edgeCount != len(inspection.Objects) {
-		t.Fatalf("object/edge counts = %d/%d, want %d", objectCount, edgeCount, len(inspection.Objects))
+	if objectCount != len(published.Inspection.Objects) || edgeCount != len(published.Inspection.Objects) {
+		t.Fatalf("object/edge counts = %d/%d, want %d", objectCount, edgeCount, len(published.Inspection.Objects))
 	}
 
 	var eventStateAfter, payload string
@@ -162,7 +166,7 @@ func TestPublishSnapshotVerificationFailureLeavesNoStateRows(t *testing.T) {
 
 	if _, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
 		StateID: stateID, SessionID: sessionID, RootTreeID: snapshot.RootTreeID,
-		Role: SnapshotInitial, EventSeq: 1, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
+		Role: SnapshotInitial, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
 	}); err == nil {
 		t.Fatal("PublishSnapshot() succeeded with missing root CAS object")
 	}
@@ -178,7 +182,7 @@ func TestPublishSnapshotVerificationFailureLeavesNoStateRows(t *testing.T) {
 	}
 }
 
-func TestPublishSecondInitialSnapshotRollsBackMetadata(t *testing.T) {
+func TestPublishSecondInitialSnapshotRollsBackMetadataAndSequence(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(ctx, filepath.Join(t.TempDir(), "replay.db"))
 	if err != nil {
@@ -209,7 +213,7 @@ func TestPublishSecondInitialSnapshotRollsBackMetadata(t *testing.T) {
 	}
 	if _, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
 		StateID: firstStateID, SessionID: sessionID, RootTreeID: firstSnapshot.RootTreeID,
-		Role: SnapshotInitial, EventSeq: 1, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
+		Role: SnapshotInitial, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
 	}); err != nil {
 		t.Fatalf("publish first snapshot: %v", err)
 	}
@@ -224,19 +228,165 @@ func TestPublishSecondInitialSnapshotRollsBackMetadata(t *testing.T) {
 	secondStateID, _ := id.NewState()
 	if _, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
 		StateID: secondStateID, SessionID: sessionID, RootTreeID: secondSnapshot.RootTreeID,
-		Role: SnapshotInitial, EventSeq: 2, WallTimeUTC: now.Add(time.Second), MonotonicNS: 2, Source: "replay.core",
+		Role: SnapshotInitial, WallTimeUTC: now.Add(time.Second), MonotonicNS: 2, Source: "replay.core",
 	}); err == nil {
 		t.Fatal("second initial snapshot unexpectedly succeeded")
 	}
 
 	var states, events int
+	var nextSeq int
 	if err := db.sql.QueryRowContext(ctx, "SELECT COUNT(1) FROM states WHERE session_id = ?", sessionID.String()).Scan(&states); err != nil {
 		t.Fatalf("count states: %v", err)
 	}
 	if err := db.sql.QueryRowContext(ctx, "SELECT COUNT(1) FROM events WHERE session_id = ?", sessionID.String()).Scan(&events); err != nil {
 		t.Fatalf("count events: %v", err)
 	}
-	if states != 1 || events != 1 {
-		t.Fatalf("states/events after rollback = %d/%d, want 1/1", states, events)
+	if err := db.sql.QueryRowContext(ctx, "SELECT next_event_seq FROM sessions WHERE id = ?", sessionID.String()).Scan(&nextSeq); err != nil {
+		t.Fatalf("read next event seq: %v", err)
+	}
+	if states != 1 || events != 1 || nextSeq != 2 {
+		t.Fatalf("states/events/nextSeq after rollback = %d/%d/%d, want 1/1/2", states, events, nextSeq)
+	}
+}
+
+func TestPublishSnapshotRejectsStaleStateBefore(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x56}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cas.Close()
+	workspace := t.TempDir()
+	file := filepath.Join(workspace, "x.txt")
+	if err := os.WriteFile(file, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID, _ := id.NewSession()
+	now := time.Now().UTC()
+	if err := db.CreateSession(ctx, SessionStart{ID: sessionID, Command: []string{"agent"}, CWD: workspace, StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	initialSnapshot, err := (state.Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialID, _ := id.NewState()
+	if _, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
+		StateID: initialID, SessionID: sessionID, RootTreeID: initialSnapshot.RootTreeID,
+		Role: SnapshotInitial, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(file, []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkpointSnapshot, err := (state.Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpointID, _ := id.NewState()
+	if _, err := db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
+		StateID: checkpointID, SessionID: sessionID, RootTreeID: checkpointSnapshot.RootTreeID,
+		Role: SnapshotCheckpoint, StateBefore: initialID, WallTimeUTC: now.Add(time.Second), MonotonicNS: 2, Source: "replay.core",
+	}); err != nil {
+		t.Fatalf("publish checkpoint: %v", err)
+	}
+
+	if err := os.WriteFile(file, []byte("three"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finalSnapshot, err := (state.Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalID, _ := id.NewState()
+	_, err = db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
+		StateID: finalID, SessionID: sessionID, RootTreeID: finalSnapshot.RootTreeID,
+		Role: SnapshotFinal, StateBefore: initialID, WallTimeUTC: now.Add(2 * time.Second), MonotonicNS: 3, Source: "replay.core",
+	})
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("PublishSnapshot(stale lineage) error = %v, want stale-lineage rejection", err)
+	}
+
+	var nextSeq int
+	if err := db.sql.QueryRowContext(ctx, "SELECT next_event_seq FROM sessions WHERE id = ?", sessionID.String()).Scan(&nextSeq); err != nil {
+		t.Fatal(err)
+	}
+	if nextSeq != 3 {
+		t.Fatalf("next_event_seq = %d, want 3 after two successful snapshots", nextSeq)
+	}
+}
+
+func TestPublishSnapshotCorruptionMarksSessionDegraded(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, filepath.Join(t.TempDir(), "replay.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	objectsRoot := t.TempDir()
+	cas, err := store.NewLocalStore(objectsRoot, bytes.Repeat([]byte{0x57}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cas.Close()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "x.txt"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := (state.Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootObj, err := cas.GetObject(snapshot.RootTreeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := state.ParseCanonicalTree(rootObj.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileID := tree.Entries[0].ObjectID
+	digest := strings.TrimPrefix(fileID.String(), "b3:")
+	filePath := filepath.Join(objectsRoot, "b3", digest[:2], digest[2:4], digest[4:])
+	payload, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload[len(payload)-1] ^= 0x80
+	if err := os.WriteFile(filePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sessionID, _ := id.NewSession()
+	stateID, _ := id.NewState()
+	now := time.Now().UTC()
+	if err := db.CreateSession(ctx, SessionStart{ID: sessionID, Command: []string{"agent"}, CWD: workspace, StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.PublishSnapshot(ctx, cas, PublishSnapshotRequest{
+		StateID: stateID, SessionID: sessionID, RootTreeID: snapshot.RootTreeID,
+		Role: SnapshotInitial, WallTimeUTC: now, MonotonicNS: 1, Source: "replay.core",
+	})
+	if !errors.Is(err, store.ErrCorruptObject) {
+		t.Fatalf("PublishSnapshot() error = %v, want ErrCorruptObject", err)
+	}
+	var status string
+	var reason string
+	if err := db.sql.QueryRowContext(ctx,
+		"SELECT status, degraded_reason FROM sessions WHERE id = ?", sessionID.String(),
+	).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "degraded" || !strings.Contains(reason, "corrupt") {
+		t.Fatalf("session status/reason = %q/%q, want degraded corruption reason", status, reason)
 	}
 }
