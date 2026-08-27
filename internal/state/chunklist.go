@@ -9,33 +9,28 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
 )
 
-const (
-	// LargeFileThreshold selects chunk-list storage for files larger than 8 MiB.
-	LargeFileThreshold = 8 << 20
-	ChunkMinSize        = 1 << 20
-	ChunkTargetSize     = 4 << 20
-	ChunkMaxSize        = 8 << 20
+// LargeFileThreshold selects chunk-list storage for files larger than 8 MiB.
+const LargeFileThreshold = 8 << 20
+const ChunkMinSize = 1 << 20
+const ChunkTargetSize = 4 << 20
+const ChunkMaxSize = 8 << 20
+const chunkObjectIDLength = 67 // "b3:" + 64 lowercase hexadecimal characters.
+const chunkEntrySize = 4 + chunkObjectIDLength
 
-	chunkObjectIDLength = 67 // "b3:" + 64 lowercase hexadecimal characters.
-	chunkEntrySize      = 4 + chunkObjectIDLength
-)
-
-var (
-	chunkListMagic = []byte{'R', 'P', 'C', 'H', 'N', 'K', 0, 1}
-	gearTable      = buildGearTable()
-)
+var chunkListMagic = []byte{'R', 'P', 'C', 'H', 'N', 'K', 0, 1}
+var gearTable = buildGearTable()
 
 // ChunkRef identifies one ordered content chunk and its plaintext byte length.
 type ChunkRef struct {
-	ObjectID store.ObjectID
-	Size     uint32
+	ObjectID	store.ObjectID
+	Size		uint32
 }
 
 // ChunkList is the canonical file payload used when a file is too large to be
 // represented as one blob object.
 type ChunkList struct {
-	Size   int64
-	Chunks []ChunkRef
+	Size	int64
+	Chunks	[]ChunkRef
 }
 
 // ContentDefinedChunks splits data using a deterministic Gear rolling hash.
