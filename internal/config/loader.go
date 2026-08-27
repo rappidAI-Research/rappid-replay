@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/ignore"
 	"go.yaml.in/yaml/v3"
@@ -137,32 +136,40 @@ func DefaultUserConfigPath() (string, error) {
 }
 
 // Validate checks invariants that must hold before configuration reaches the
-// recorder or storage layers. Enum expansion remains owned by the component
-// that defines each mode; this boundary rejects empty control values and
-// invalid ignore syntax without prematurely freezing future providers/modes.
+// recorder, export, sandbox, or intelligence layers. Security-sensitive modes
+// are strict enums: typos fail closed rather than silently becoming a new mode.
 func Validate(cfg Config) error {
-	if strings.TrimSpace(cfg.Record.TerminalInput) == "" {
-		return fmt.Errorf("record.terminal_input must not be empty")
+	if err := requireEnum("record.terminal_input", cfg.Record.TerminalInput, "metadata-only", "full", "off"); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Privacy.ExportSecretScan) == "" {
-		return fmt.Errorf("privacy.export_secret_scan must not be empty")
+	if err := requireEnum("privacy.export_secret_scan", cfg.Privacy.ExportSecretScan, "block", "warn", "off"); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Sandbox.Mode) == "" {
-		return fmt.Errorf("sandbox.mode must not be empty")
+	if err := requireEnum("sandbox.mode", cfg.Sandbox.Mode, "auto", "host", "container"); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Sandbox.Network) == "" {
-		return fmt.Errorf("sandbox.network must not be empty")
+	if err := requireEnum("sandbox.network", cfg.Sandbox.Network, "ask", "deny", "allow"); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Intelligence.Profile) == "" {
-		return fmt.Errorf("intelligence.profile must not be empty")
+	if err := requireEnum("intelligence.profile", cfg.Intelligence.Profile, "lite", "standard", "enhanced"); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Intelligence.Provider) == "" {
-		return fmt.Errorf("intelligence.provider must not be empty")
+	if err := requireEnum("intelligence.provider", cfg.Intelligence.Provider, "llamacpp", "ollama", "local-endpoint", "openai-compatible", "disabled"); err != nil {
+		return err
 	}
 	if _, err := ignore.New(cfg.Record.Ignore); err != nil {
 		return fmt.Errorf("record.ignore: %w", err)
 	}
 	return nil
+}
+
+func requireEnum(name, value string, allowed ...string) error {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s = %q, allowed values are %v", name, value, allowed)
 }
 
 func readOptionalLayer(name string) (Overrides, bool, error) {
