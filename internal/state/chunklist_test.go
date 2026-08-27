@@ -75,43 +75,129 @@ func TestContentDefinedChunksAreDeterministicAndBounded(t *testing.T) {
 }
 
 func TestStreamContentDefinedChunksMatchesInMemoryAlgorithm(t *testing.T) {
-	data := make([]byte, 23<<20)
-	for i := range data {
-		data[i] = byte((i*47 + i/8192) % 251)
+	lengths := []int{
+		ChunkMaxSize + 1,
+		9<<20 + 17,
+		12<<20 + 12345,
+		16<<20 + 7,
+		23 << 20,
 	}
-	want := ContentDefinedChunks(data)
+	for caseIndex, length := range lengths {
+		data := make([]byte, length)
+		for i := range data {
+			// Vary the deterministic content between cases while retaining enough
+			// local structure to exercise content-dependent boundaries.
+			data[i] = byte((i*(31+caseIndex*7) + i/(1024+caseIndex*257) + caseIndex*13) % 251)
+		}
+		want := ContentDefinedChunks(data)
 
-	var got [][]byte
-	total, err := StreamContentDefinedChunks(&boundedReader{reader: bytes.NewReader(data), maxRequest: chunkStreamReadBuffer}, func(chunk []byte) error {
-		got = append(got, chunk)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("StreamContentDefinedChunks() error = %v", err)
-	}
-	if total != int64(len(data)) {
-		t.Fatalf("stream total = %d, want %d", total, len(data))
-	}
-	if len(got) != len(want) {
-		t.Fatalf("stream chunk count = %d, want %d", len(got), len(want))
-	}
-	for i := range want {
-		if !bytes.Equal(got[i], want[i]) {
-			t.Fatalf("stream chunk %d differs from canonical in-memory chunk", i)
+		for _, readSize := range []int{chunkStreamReadBuffer, 8191, 3073} {
+			t.Run(chunkParityName(length, readSize), func(t *testing.T) {
+				reader := &chunkedReader{data: data, maxRead: readSize, eofWithData: readSize == 3073}
+				var got [][]byte
+				total, err := StreamContentDefinedChunks(reader, func(chunk []byte) error {
+					got = append(got, append([]byte(nil), chunk...))
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("StreamContentDefinedChunks() error = %v", err)
+				}
+				if total != int64(len(data)) {
+					t.Fatalf("stream total = %d, want %d", total, len(data))
+				}
+				assertChunkSetsEqual(t, got, want)
+			})
 		}
 	}
 }
 
-type boundedReader struct {
-	reader     io.Reader
-	maxRequest int
+func TestStreamContentDefinedChunksPreservesFinalRemainder(t *testing.T) {
+	// v1 intentionally does not search for another boundary when the complete
+	// remaining suffix is <= ChunkMaxSize. This was a subtle place where a naïve
+	// streaming implementation can diverge from the canonical in-memory format.
+	data := make([]byte, ChunkMaxSize+1)
+	for i := range data {
+		data[i] = byte((i*73 + i/997) % 251)
+	}
+	want := ContentDefinedChunks(data)
+	if len(want) == 0 {
+		t.Fatal("canonical chunker returned no chunks")
+	}
+
+	var got [][]byte
+	_, err := StreamContentDefinedChunks(&chunkedReader{data: data, maxRead: 4093, eofWithData: true}, func(chunk []byte) error {
+		got = append(got, append([]byte(nil), chunk...))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertChunkSetsEqual(t, got, want)
 }
 
-func (r *boundedReader) Read(p []byte) (int, error) {
-	if len(p) > r.maxRequest {
-		return 0, io.ErrShortBuffer
+func chunkParityName(length, readSize int) string {
+	return "bytes_" + itoa(length) + "_read_" + itoa(readSize)
+}
+
+func itoa(value int) string {
+	if value == 0 {
+		return "0"
 	}
-	return r.reader.Read(p)
+	var buf [32]byte
+	pos := len(buf)
+	for value > 0 {
+		pos--
+		buf[pos] = byte('0' + value%10)
+		value /= 10
+	}
+	return string(buf[pos:])
+}
+
+func assertChunkSetsEqual(t *testing.T, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("stream chunk count = %d, want %d; got sizes=%v want sizes=%v", len(got), len(want), chunkSizes(got), chunkSizes(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("stream chunk %d differs: got %d bytes, want %d", i, len(got[i]), len(want[i]))
+		}
+	}
+}
+
+func chunkSizes(chunks [][]byte) []int {
+	sizes := make([]int, len(chunks))
+	for i, chunk := range chunks {
+		sizes[i] = len(chunk)
+	}
+	return sizes
+}
+
+type chunkedReader struct {
+	data        []byte
+	offset      int
+	maxRead     int
+	eofWithData bool
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.offset >= len(r.data) {
+		return 0, io.EOF
+	}
+	limit := r.maxRead
+	if limit <= 0 || limit > len(p) {
+		limit = len(p)
+	}
+	remaining := len(r.data) - r.offset
+	if limit > remaining {
+		limit = remaining
+	}
+	copy(p[:limit], r.data[r.offset:r.offset+limit])
+	r.offset += limit
+	if r.eofWithData && r.offset == len(r.data) {
+		return limit, io.EOF
+	}
+	return limit, nil
 }
 
 func TestSnapshotLargeFilePublishesReachableChunks(t *testing.T) {
