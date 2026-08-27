@@ -113,7 +113,7 @@ VALUES(?, ?, ?, ?)`,
 	if err != nil {
 		return state.Inspection{}, fmt.Errorf("encode snapshot event payload: %w", err)
 	}
-	privacyJSON := []byte(`{"classification":"technical"}`)
+	privacyJSON := []byte("{\"classification\":\"technical\"}")
 	stateBefore := req.StateBefore.String()
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO events(
