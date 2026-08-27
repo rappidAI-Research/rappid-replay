@@ -10,6 +10,8 @@ The deterministic core must remain fully functional without AI. Local AI is an o
 
 Early implementation. Architecture baseline: Replay Architecture v1.0 (27 August 2026).
 
+Track A (Foundations) is in progress. The repository now contains the initial event/state schemas, typed safety defaults, UUIDv7 session IDs, SQLite migrations, and an encrypted BLAKE3-addressed local object store using zstd + XChaCha20-Poly1305.
+
 ## Core principles
 
 - deterministic core
@@ -25,8 +27,8 @@ Early implementation. Architecture baseline: Replay Architecture v1.0 (27 August
 
 ## Planned implementation
 
-The initial implementation track is Foundations: schemas, configuration, SQLite persistence, content-addressed storage, encryption, identifiers, and migrations. Recording, restore/verify, branch/rerun, diff, adapters, `.rplay`, UI, local intelligence, and hardening follow on top of those final interfaces.
+The implementation order is Foundations, Recorder, Restore/Verify, Branch/Rerun, Diff, Adapter SDK + Codex/OTel, `.rplay`, local UI, optional local intelligence, and hardening. Each stage builds on the final interfaces rather than a throwaway prototype.
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE). Model weights, if supported or downloaded by Replay, retain their own upstream licenses.
+Apache License 2.0. Model weights and third-party artifacts retain their own upstream licenses.
