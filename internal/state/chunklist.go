@@ -3,7 +3,9 @@ package state
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
@@ -16,6 +18,7 @@ const ChunkTargetSize = 4 << 20
 const ChunkMaxSize = 8 << 20
 const chunkObjectIDLength = 67 // "b3:" + 64 lowercase hexadecimal characters.
 const chunkEntrySize = 4 + chunkObjectIDLength
+const chunkStreamReadBuffer = 256 << 10
 
 var chunkListMagic = []byte{'R', 'P', 'C', 'H', 'N', 'K', 0, 1}
 var gearTable = buildGearTable()
@@ -48,6 +51,79 @@ func ContentDefinedChunks(data []byte) [][]byte {
 		start = end
 	}
 	return chunks
+}
+
+// StreamContentDefinedChunks applies the exact same boundary algorithm as
+// ContentDefinedChunks without retaining the complete input in memory. At most
+// one ChunkMaxSize chunk plus a small read buffer is live at a time. The emit
+// callback receives an independent chunk buffer and may retain it.
+func StreamContentDefinedChunks(r io.Reader, emit func([]byte) error) (int64, error) {
+	if r == nil {
+		return 0, fmt.Errorf("chunk reader is required")
+	}
+	if emit == nil {
+		return 0, fmt.Errorf("chunk emitter is required")
+	}
+
+	readBuffer := make([]byte, chunkStreamReadBuffer)
+	chunk := make([]byte, 0, ChunkMaxSize)
+	var total int64
+	var rolling uint64
+	emptyReads := 0
+	const boundaryMask = uint64(ChunkTargetSize - 1)
+
+	flush := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		out := append([]byte(nil), chunk...)
+		if err := emit(out); err != nil {
+			return err
+		}
+		chunk = chunk[:0]
+		rolling = 0
+		return nil
+	}
+
+	for {
+		n, readErr := r.Read(readBuffer)
+		if n > 0 {
+			emptyReads = 0
+			for _, value := range readBuffer[:n] {
+				chunk = append(chunk, value)
+				total++
+
+				// The canonical v1 algorithm begins rolling only after the
+				// first ChunkMinSize bytes of each chunk. This mirrors
+				// nextChunkBoundary exactly.
+				if len(chunk) > ChunkMinSize {
+					rolling = (rolling << 1) + gearTable[value]
+					if rolling&boundaryMask == 0 || len(chunk) >= ChunkMaxSize {
+						if err := flush(); err != nil {
+							return total, fmt.Errorf("emit content-defined chunk: %w", err)
+						}
+					}
+				}
+			}
+		} else if readErr == nil {
+			emptyReads++
+			if emptyReads >= 100 {
+				return total, io.ErrNoProgress
+			}
+		}
+
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return total, fmt.Errorf("read content-defined chunk stream: %w", readErr)
+		}
+	}
+
+	if err := flush(); err != nil {
+		return total, fmt.Errorf("emit final content-defined chunk: %w", err)
+	}
+	return total, nil
 }
 
 func nextChunkBoundary(data []byte, start int) int {
@@ -108,6 +184,9 @@ func EncodeChunkList(list ChunkList) ([]byte, error) {
 		if len(chunk.ObjectID.String()) != chunkObjectIDLength {
 			return nil, fmt.Errorf("chunk %d object id has non-canonical length", index)
 		}
+		if total > math.MaxInt64-int64(chunk.Size) {
+			return nil, fmt.Errorf("chunk sizes overflow int64")
+		}
 		total += int64(chunk.Size)
 	}
 	if total != list.Size {
@@ -148,6 +227,9 @@ func DecodeChunkList(payload []byte) (ChunkList, error) {
 	if count == 0 {
 		return ChunkList{}, fmt.Errorf("chunk list contains no chunks")
 	}
+	if uint64(count) > uint64((len(payload)-headerSize)/chunkEntrySize)+1 {
+		return ChunkList{}, fmt.Errorf("chunk list count exceeds payload bounds")
+	}
 	expected := headerSize + int(count)*chunkEntrySize
 	if expected != len(payload) {
 		return ChunkList{}, fmt.Errorf("chunk list length = %d, want %d", len(payload), expected)
@@ -167,6 +249,9 @@ func DecodeChunkList(payload []byte) (ChunkList, error) {
 		id, err := store.ParseObjectID(idText)
 		if err != nil {
 			return ChunkList{}, fmt.Errorf("chunk %d has invalid object id: %w", i, err)
+		}
+		if total > math.MaxInt64-int64(size) {
+			return ChunkList{}, fmt.Errorf("chunk sizes overflow int64")
 		}
 		chunks = append(chunks, ChunkRef{ObjectID: id, Size: size})
 		total += int64(size)
