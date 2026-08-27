@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,46 @@ func TestContentDefinedChunksAreDeterministicAndBounded(t *testing.T) {
 	if !bytes.Equal(rebuilt, data) {
 		t.Fatal("chunk concatenation did not reconstruct original data")
 	}
+}
+
+func TestStreamContentDefinedChunksMatchesInMemoryAlgorithm(t *testing.T) {
+	data := make([]byte, 23<<20)
+	for i := range data {
+		data[i] = byte((i*47 + i/8192) % 251)
+	}
+	want := ContentDefinedChunks(data)
+
+	var got [][]byte
+	total, err := StreamContentDefinedChunks(&boundedReader{reader: bytes.NewReader(data), maxRequest: chunkStreamReadBuffer}, func(chunk []byte) error {
+		got = append(got, chunk)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamContentDefinedChunks() error = %v", err)
+	}
+	if total != int64(len(data)) {
+		t.Fatalf("stream total = %d, want %d", total, len(data))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("stream chunk count = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("stream chunk %d differs from canonical in-memory chunk", i)
+		}
+	}
+}
+
+type boundedReader struct {
+	reader     io.Reader
+	maxRequest int
+}
+
+func (r *boundedReader) Read(p []byte) (int, error) {
+	if len(p) > r.maxRequest {
+		return 0, io.ErrShortBuffer
+	}
+	return r.reader.Read(p)
 }
 
 func TestSnapshotLargeFilePublishesReachableChunks(t *testing.T) {
