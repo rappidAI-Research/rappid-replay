@@ -126,7 +126,7 @@ func (s Snapshotter) captureDir(absDir, relDir string) (store.ObjectID, Snapshot
 			if err != nil {
 				return "", Snapshot{}, fmt.Errorf("snapshot file %q: %w", relPath, err)
 			}
-			objectID, err := s.CAS.PutObject(store.ObjectBlob, data)
+			objectID, err := s.storeFile(data)
 			if err != nil {
 				return "", Snapshot{}, fmt.Errorf("store file %q: %w", relPath, err)
 			}
@@ -157,6 +157,27 @@ func (s Snapshotter) captureDir(absDir, relDir string) (store.ObjectID, Snapshot
 		return "", Snapshot{}, fmt.Errorf("store tree %q: %w", relDir, err)
 	}
 	return treeID, stats, nil
+}
+
+func (s Snapshotter) storeFile(data []byte) (store.ObjectID, error) {
+	if len(data) <= LargeFileThreshold {
+		return s.CAS.PutObject(store.ObjectBlob, data)
+	}
+
+	chunks := ContentDefinedChunks(data)
+	refs := make([]ChunkRef, 0, len(chunks))
+	for index, chunk := range chunks {
+		id, err := s.CAS.PutObject(store.ObjectBlob, chunk)
+		if err != nil {
+			return "", fmt.Errorf("store chunk %d: %w", index, err)
+		}
+		refs = append(refs, ChunkRef{ObjectID: id, Size: uint32(len(chunk))})
+	}
+	payload, err := EncodeChunkList(ChunkList{Size: int64(len(data)), Chunks: refs})
+	if err != nil {
+		return "", fmt.Errorf("encode chunk list: %w", err)
+	}
+	return s.CAS.PutObject(store.ObjectChunkList, payload)
 }
 
 func readStableFile(name string) ([]byte, fs.FileInfo, error) {
