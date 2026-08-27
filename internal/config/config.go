@@ -1,8 +1,10 @@
-// Package config defines Replay's typed configuration model and defaults.
+// Package config defines Replay's typed configuration model, defaults, and
+// deterministic layer resolution.
 package config
 
-// Config follows the precedence CLI flags > project config > user config > defaults.
-// Parsing and merge logic will be added without changing this typed core casually.
+// Config is the fully resolved effective configuration. Layering follows the
+// Architecture v1.0 precedence: CLI flags > project config > user config >
+// defaults. Secrets are intentionally absent from this project-visible model.
 type Config struct {
 	Record       RecordConfig       `json:"record" yaml:"record"`
 	Privacy      PrivacyConfig      `json:"privacy" yaml:"privacy"`
