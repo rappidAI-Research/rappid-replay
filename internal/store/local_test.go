@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"testing"
 
@@ -84,10 +85,46 @@ func TestLocalStoreDoesNotSilentlyReplaceCorruption(t *testing.T) {
 		t.Fatalf("corrupt payload: %v", err)
 	}
 
-	if err := store.Verify(id); err == nil {
-		t.Fatal("Verify() accepted corrupted object")
+	if err := store.Verify(id); !errors.Is(err, ErrCorruptObject) {
+		t.Fatalf("Verify() error = %v, want ErrCorruptObject", err)
 	}
-	if _, err := store.Put(plaintext); err == nil {
-		t.Fatal("Put() silently replaced corrupted existing object")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("corrupt object path stat error = %v, want object moved out of active CAS", err)
+	}
+	blocked, err := store.isQuarantined(id)
+	if err != nil {
+		t.Fatalf("isQuarantined() error = %v", err)
+	}
+	if !blocked {
+		t.Fatal("corrupt object was not persistently blocked after quarantine")
+	}
+	if _, err := store.Put(plaintext); !errors.Is(err, ErrCorruptObject) {
+		t.Fatalf("Put() after quarantine error = %v, want ErrCorruptObject", err)
+	}
+}
+
+func TestLocalStoreRejectsWrongKeyBeforeObjectAccess(t *testing.T) {
+	root := t.TempDir()
+	firstKey := bytes.Repeat([]byte{0x41}, chacha20poly1305.KeySize)
+	first, err := NewLocalStore(root, firstKey)
+	if err != nil {
+		t.Fatalf("NewLocalStore(first) error = %v", err)
+	}
+	if _, err := first.Put([]byte("protected object")); err != nil {
+		_ = first.Close()
+		t.Fatalf("Put() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	wrongKey := bytes.Repeat([]byte{0x42}, chacha20poly1305.KeySize)
+	second, err := NewLocalStore(root, wrongKey)
+	if err == nil {
+		_ = second.Close()
+		t.Fatal("NewLocalStore() accepted a master key that does not match the store")
+	}
+	if !errors.Is(err, ErrStoreKeyCheck) {
+		t.Fatalf("NewLocalStore(wrong key) error = %v, want ErrStoreKeyCheck", err)
 	}
 }
