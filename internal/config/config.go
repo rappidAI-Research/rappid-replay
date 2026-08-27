@@ -33,11 +33,11 @@ type IntelligenceConfig struct {
 func Defaults() Config {
 	return Config{
 		Record: RecordConfig{
-			Ignore: []string{"node_modules/**", ".venv/**", "target/**", "build/**", "dist/**"},
+			Ignore:        []string{"node_modules/**", ".venv/**", "target/**", "build/**", "dist/**"},
 			TerminalInput: "metadata-only",
 		},
-		Privacy: PrivacyConfig{ExportSecretScan: "block"},
-		Sandbox: SandboxConfig{Mode: "auto", Network: "ask"},
+		Privacy:      PrivacyConfig{ExportSecretScan: "block"},
+		Sandbox:      SandboxConfig{Mode: "auto", Network: "ask"},
 		Intelligence: IntelligenceConfig{Enabled: false, Profile: "standard", Provider: "llamacpp"},
 	}
 }
