@@ -24,6 +24,14 @@ const (
 	migrationLockRetry   = 50 * time.Millisecond
 )
 
+// Versions 1 and 2 shipped before schema_migrations had a checksum column.
+// Their accepted SHA-256 values are pinned in code so an old database cannot
+// silently bless modified embedded SQL during the one-time checksum backfill.
+var legacyMigrationChecksums = map[int]string{
+	1: "sha256:03a2da4877c3c87acedddefc9a64cf1e2125689870a6fb785b180014fdbae1f5",
+	2: "sha256:42507fe04a7f84d49cb1dc1a7025a99a8891438e03a0309fb0e686ef7ab2298a",
+}
+
 type migration struct {
 	version  int
 	name     string
@@ -87,8 +95,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if appliedName != item.name {
 				return fmt.Errorf("migration version %d recorded as %q, embedded file is %q", item.version, appliedName, item.name)
 			}
-			if checksumSupported && appliedChecksum.Valid && appliedChecksum.String != item.checksum {
-				return fmt.Errorf("migration %s checksum mismatch: database=%s embedded=%s", item.name, appliedChecksum.String, item.checksum)
+			if checksumSupported && appliedChecksum.Valid {
+				if appliedChecksum.String != item.checksum {
+					return fmt.Errorf("migration %s checksum mismatch: database=%s embedded=%s", item.name, appliedChecksum.String, item.checksum)
+				}
+			} else if err := validateLegacyMigrationBaseline(item); err != nil {
+				return err
 			}
 			continue
 		}
@@ -132,6 +144,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err := db.backfillAndValidateMigrationChecksums(ctx, migrations); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateLegacyMigrationBaseline(item migration) error {
+	want, ok := legacyMigrationChecksums[item.version]
+	if !ok {
+		return fmt.Errorf("migration %s is recorded without a checksum and has no pinned legacy baseline", item.name)
+	}
+	if item.checksum != want {
+		return fmt.Errorf("legacy migration %s checksum mismatch: pinned=%s embedded=%s", item.name, want, item.checksum)
 	}
 	return nil
 }
@@ -262,6 +285,9 @@ func (db *DB) backfillAndValidateMigrationChecksums(ctx context.Context, migrati
 				return fmt.Errorf("migration %s checksum mismatch: database=%s embedded=%s", item.name, checksum.String, item.checksum)
 			}
 			continue
+		}
+		if err := validateLegacyMigrationBaseline(item); err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx,
 			"UPDATE schema_migrations SET checksum = ? WHERE version = ? AND name = ? AND checksum IS NULL",
