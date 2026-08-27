@@ -1,24 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://rappidai-research.com/schemas/replay/state-tree-v1.json",
-  "title": "rappidAI Replay State Tree v1",
+  "title": "rappidAI Replay Recursive Tree Object v1",
   "type": "object",
   "required": ["schema", "entries"],
   "properties": {
-    "schema": {"const": "rappid.replay.state-tree/1"},
+    "schema": {"const": "rappid.replay.tree-object/1"},
     "entries": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path", "kind", "mode"],
+        "required": ["name_b64", "kind", "mode", "object_id"],
         "properties": {
-          "path": {"type": "string", "minLength": 1},
+          "name_b64": {"type": "string"},
           "kind": {"enum": ["file", "dir", "symlink"]},
           "mode": {"type": "integer", "minimum": 0},
           "size": {"type": "integer", "minimum": 0},
-          "object_id": {"type": "string"},
-          "target": {"type": "string"},
-          "extensions": {"type": "object", "additionalProperties": {"type": "string"}}
+          "object_id": {"type": "string", "pattern": "^b3:[0-9a-f]{64}$"}
         },
         "additionalProperties": false
       }

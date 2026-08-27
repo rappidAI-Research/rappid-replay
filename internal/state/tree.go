@@ -1,7 +1,9 @@
 // Package state defines canonical workspace-state structures.
 package state
 
-const TreeSchemaV1 = "rappid.replay.state-tree/1"
+import "github.com/rappidAI-Research/rappid-replay/internal/store"
+
+const TreeSchemaV1 = "rappid.replay.tree-object/1"
 
 type EntryKind string
 
@@ -11,25 +13,24 @@ const (
 	EntrySymlink EntryKind = "symlink"
 )
 
-// Tree is an immutable logical workspace tree. Canonical serialization and
-// hashing are implemented separately so identity never depends on Go map order.
+// Tree is the immutable logical content of one directory. Child directories are
+// represented by their own tree objects, producing a recursive Merkle tree in
+// the content-addressed store.
 type Tree struct {
-	Schema  string  `json:"schema"`
-	Entries []Entry `json:"entries"`
+	Entries []Entry
 }
 
-// Entry contains platform-common metadata. Platform extensions are deliberately
-// kept separate from the stable common fields.
+// Entry stores a single path component as raw bytes so canonical state identity
+// does not depend on UTF-8 validity. ObjectID references a typed CAS object:
+// blob/chunk_list for files, tree for directories, and link for symlinks.
 type Entry struct {
-	Path       string            `json:"path"`
-	Kind       EntryKind         `json:"kind"`
-	Mode       uint32            `json:"mode"`
-	Size       int64             `json:"size,omitempty"`
-	ObjectID   string            `json:"object_id,omitempty"`
-	Target     string            `json:"target,omitempty"`
-	Extensions map[string]string `json:"extensions,omitempty"`
+	Name     []byte
+	Kind     EntryKind
+	Mode     uint32
+	Size     int64
+	ObjectID store.ObjectID
 }
 
 func NewTree(entries []Entry) Tree {
-	return Tree{Schema: TreeSchemaV1, Entries: entries}
+	return Tree{Entries: append([]Entry(nil), entries...)}
 }

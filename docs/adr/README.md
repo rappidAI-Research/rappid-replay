@@ -15,5 +15,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-005 — Generic Recorder as mandatory baseline — **Accepted**
 - ADR-006 — Local-first; no rappidAI cloud required — **Accepted**
 - ADR-013 — Foundation library selections — **Accepted**
+- ADR-014 — Canonical recursive state trees — **Accepted**
 
 ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
