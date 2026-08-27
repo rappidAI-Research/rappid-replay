@@ -12,6 +12,11 @@ import (
 
 const objectPayloadMagic = "RPO1"
 
+// maxDecodedObjectBytes is an explicit memory-safety boundary for one canonical
+// CAS object. Large files are chunked before they reach the codec, so individual
+// objects should remain comfortably below this limit.
+const maxDecodedObjectBytes = 64 << 20
+
 // Codec transforms canonical plaintext objects into Replay's encrypted local
 // storage representation. Object identity is deliberately computed before
 // compression and encryption.
@@ -32,11 +37,16 @@ func NewCodec(key []byte) (*Codec, error) {
 		zstd.WithEncoderLevel(zstd.SpeedDefault),
 		zstd.WithEncoderCRC(true),
 		zstd.WithZeroFrames(true),
+		zstd.WithEncoderConcurrency(1),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create zstd encoder: %w", err)
 	}
-	decoder, err := zstd.NewReader(nil)
+	decoder, err := zstd.NewReader(nil,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(maxDecodedObjectBytes),
+		zstd.WithDecodeAllCapLimit(true),
+	)
 	if err != nil {
 		_ = encoder.Close()
 		return nil, fmt.Errorf("create zstd decoder: %w", err)
@@ -48,6 +58,9 @@ func NewCodec(key []byte) (*Codec, error) {
 // versioned magic prefix followed by a fresh XChaCha nonce and ciphertext.
 // The object ID is AEAD associated data, binding stored bytes to their identity.
 func (c *Codec) Seal(plaintext []byte) (ObjectID, []byte, error) {
+	if len(plaintext) > maxDecodedObjectBytes {
+		return "", nil, fmt.Errorf("object plaintext is %d bytes, maximum is %d", len(plaintext), maxDecodedObjectBytes)
+	}
 	id := SumObject(plaintext)
 	compressed := c.encoder.EncodeAll(plaintext, nil)
 
@@ -87,6 +100,9 @@ func (c *Codec) Open(expected ObjectID, payload []byte) ([]byte, error) {
 	plaintext, err := c.decoder.DecodeAll(compressed, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decompress object payload: %w", err)
+	}
+	if len(plaintext) > maxDecodedObjectBytes {
+		return nil, fmt.Errorf("decoded object exceeds %d-byte limit", maxDecodedObjectBytes)
 	}
 	actual := SumObject(plaintext)
 	if actual != expected {
