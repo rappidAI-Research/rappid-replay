@@ -29,4 +29,4 @@ The initial implementation track is Foundations: schemas, configuration, SQLite 
 
 ## License
 
-Apache-2.0 is the architecture's current recommendation and remains a proposed decision until ADR-001 is accepted. Model weights remain separately licensed by their upstream publishers.
+Apache-2.0. See [`LICENSE`](LICENSE). Model weights, if supported or downloaded by Replay, retain their own upstream licenses.
