@@ -201,7 +201,8 @@ func readOptionalLayer(name string) (Overrides, bool, error) {
 
 func apply(target *Config, layer Overrides) {
 	if layer.Record.Ignore != nil {
-		target.Record.Ignore = append([]string(nil), (*layer.Record.Ignore)...)
+		target.Record.Ignore = make([]string, len(*layer.Record.Ignore))
+		copy(target.Record.Ignore, *layer.Record.Ignore)
 	}
 	if layer.Record.TerminalInput != nil {
 		target.Record.TerminalInput = *layer.Record.TerminalInput
