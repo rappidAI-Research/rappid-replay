@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rappidai-research.com/schemas/replay/event-v1.json",
+  "title": "rappidAI Replay Event v1",
+  "type": "object",
+  "required": ["schema", "session_id", "seq", "wall_time_utc", "monotonic_ns", "type", "source", "privacy"],
+  "properties": {
+    "schema": {"const": "rappid.replay.event/1"},
+    "session_id": {"type": "string", "minLength": 1},
+    "seq": {"type": "integer", "minimum": 1},
+    "wall_time_utc": {"type": "string", "format": "date-time"},
+    "monotonic_ns": {"type": "integer", "minimum": 0},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_.-]*$"},
+    "source": {"type": "string", "minLength": 1},
+    "state_before": {"type": "string"},
+    "state_after": {"type": "string"},
+    "parent_event_id": {"type": "string"},
+    "span_id": {"type": "string"},
+    "payload": {},
+    "privacy": {
+      "type": "object",
+      "required": ["classification"],
+      "properties": {
+        "classification": {"type": "string", "minLength": 1},
+        "redacted": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rappidai-research.com/schemas/replay/state-tree-v1.json",
+  "title": "rappidAI Replay State Tree v1",
+  "type": "object",
+  "required": ["schema", "entries"],
+  "properties": {
+    "schema": {"const": "rappid.replay.state-tree/1"},
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind", "mode"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "kind": {"enum": ["file", "dir", "symlink"]},
+          "mode": {"type": "integer", "minimum": 0},
+          "size": {"type": "integer", "minimum": 0},
+          "object_id": {"type": "string"},
+          "target": {"type": "string"},
+          "extensions": {"type": "object", "additionalProperties": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
