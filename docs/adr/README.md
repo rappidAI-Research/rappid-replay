@@ -14,3 +14,4 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-004 — SQLite for metadata and event indexing — **Accepted**
 - ADR-005 — Generic Recorder as mandatory baseline — **Accepted**
 - ADR-006 — Local-first; no rappidAI cloud required — **Accepted**
+- ADR-013 — Foundation library selections — **Accepted**
