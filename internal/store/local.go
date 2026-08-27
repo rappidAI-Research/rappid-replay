@@ -20,6 +20,8 @@ var (
 	// belongs to this object store. The store is not opened and no objects are
 	// mutated in this condition.
 	ErrStoreKeyCheck = errors.New("Replay CAS master-key check failed")
+	errMalformedStoredFile = errors.New("malformed Replay CAS storage file")
+	errStoredFileChanged   = errors.New("Replay CAS storage file changed while reading")
 )
 
 const keyCheckFileName = ".key-check-v1"
@@ -46,6 +48,9 @@ func NewLocalStore(root string, key []byte) (*LocalStore, error) {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return nil, fmt.Errorf("create object store root: %w", err)
 	}
+	if err := os.Chmod(abs, 0o700); err != nil {
+		return nil, fmt.Errorf("set object store root permissions: %w", err)
+	}
 	if parent := filepath.Dir(abs); parent != abs {
 		if err := syncDir(parent); err != nil {
 			return nil, fmt.Errorf("persist object store root: %w", err)
@@ -54,6 +59,9 @@ func NewLocalStore(root string, key []byte) (*LocalStore, error) {
 	b3Root := filepath.Join(abs, "b3")
 	if err := os.MkdirAll(b3Root, 0o700); err != nil {
 		return nil, fmt.Errorf("create object store hash root: %w", err)
+	}
+	if err := os.Chmod(b3Root, 0o700); err != nil {
+		return nil, fmt.Errorf("set object store hash root permissions: %w", err)
 	}
 	if err := syncDir(abs); err != nil {
 		return nil, fmt.Errorf("persist object store hash root: %w", err)
@@ -128,8 +136,15 @@ func (s *LocalStore) Get(id ObjectID) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	payload, err := os.ReadFile(path)
+	payload, err := readStableStoredFile(path, maxStoredObjectBytes)
 	if err != nil {
+		if errors.Is(err, errMalformedStoredFile) {
+			quarantinePath, quarantineErr := s.quarantineCorruptObject(id, path)
+			if quarantineErr != nil {
+				return nil, fmt.Errorf("%w: object %s storage is malformed: %v; quarantine failed: %v", ErrCorruptObject, id, err, quarantineErr)
+			}
+			return nil, fmt.Errorf("%w: object %s malformed storage was quarantined at %s: %v", ErrCorruptObject, id, quarantinePath, err)
+		}
 		return nil, fmt.Errorf("read object %s: %w", id, err)
 	}
 	plaintext, err := s.codec.Open(id, payload)
@@ -162,7 +177,7 @@ func (s *LocalStore) objectPath(id ObjectID) (string, error) {
 
 func (s *LocalStore) verifyOrInitializeKeyCheck() error {
 	checkPath := filepath.Join(s.root, keyCheckFileName)
-	if payload, err := os.ReadFile(checkPath); err == nil {
+	if payload, err := readStableStoredFile(checkPath, maxStoredObjectBytes); err == nil {
 		if err := s.verifyKeyCheckPayload(payload); err != nil {
 			return err
 		}
@@ -181,7 +196,7 @@ func (s *LocalStore) verifyOrInitializeKeyCheck() error {
 		if err != nil {
 			return err
 		}
-		payload, err := os.ReadFile(samplePath)
+		payload, err := readStableStoredFile(samplePath, maxStoredObjectBytes)
 		if err != nil {
 			return fmt.Errorf("read legacy CAS sample %s: %w", sampleID, err)
 		}
@@ -203,7 +218,7 @@ func (s *LocalStore) verifyOrInitializeKeyCheck() error {
 		return fmt.Errorf("persist CAS key check: %w", err)
 	}
 	if !committed {
-		existing, err := os.ReadFile(checkPath)
+		existing, err := readStableStoredFile(checkPath, maxStoredObjectBytes)
 		if err != nil {
 			return fmt.Errorf("read raced CAS key check: %w", err)
 		}
@@ -261,10 +276,77 @@ func (s *LocalStore) firstObjectID() (ObjectID, bool, error) {
 	return "", false, nil
 }
 
+func readStableStoredFile(name string, limit int64) ([]byte, error) {
+	before, err := os.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %q is not a regular non-symlink file", errMalformedStoredFile, name)
+	}
+	if before.Size() < 0 || before.Size() > limit {
+		return nil, fmt.Errorf("%w: %q size %d exceeds limit %d", errMalformedStoredFile, name, before.Size(), limit)
+	}
+
+	file, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !sameStoredFileInfo(before, opened) {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: %q was replaced while opening", errStoredFileChanged, name)
+	}
+
+	data, readErr := io.ReadAll(io.LimitReader(file, limit+1))
+	afterHandle, statErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if statErr != nil {
+		return nil, statErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%w: %q grew beyond limit %d", errMalformedStoredFile, name, limit)
+	}
+	if !sameStoredFileInfo(opened, afterHandle) || int64(len(data)) != afterHandle.Size() {
+		return nil, fmt.Errorf("%w: %q changed while reading", errStoredFileChanged, name)
+	}
+	current, err := os.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !sameStoredFileInfo(opened, current) {
+		return nil, fmt.Errorf("%w: %q path was replaced while reading", errStoredFileChanged, name)
+	}
+	return data, nil
+}
+
+func sameStoredFileInfo(a, b fs.FileInfo) bool {
+	if a == nil || b == nil || !os.SameFile(a, b) {
+		return false
+	}
+	return a.Mode() == b.Mode() && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
 func (s *LocalStore) commitPayloadNoReplace(target string, payload []byte) (bool, error) {
+	if len(payload) > maxStoredObjectBytes {
+		return false, fmt.Errorf("stored payload is %d bytes, maximum is %d", len(payload), maxStoredObjectBytes)
+	}
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, fmt.Errorf("create object directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return false, fmt.Errorf("set object directory permissions: %w", err)
 	}
 	if err := s.syncDirectoryChain(dir); err != nil {
 		return false, err
@@ -369,6 +451,12 @@ func (s *LocalStore) quarantineCorruptObject(id ObjectID, source string) (string
 	blockedDir := filepath.Join(quarantineDir, "blocked")
 	if err := os.MkdirAll(blockedDir, 0o700); err != nil {
 		return "", fmt.Errorf("create quarantine directory: %w", err)
+	}
+	if err := os.Chmod(quarantineDir, 0o700); err != nil {
+		return "", fmt.Errorf("set quarantine directory permissions: %w", err)
+	}
+	if err := os.Chmod(blockedDir, 0o700); err != nil {
+		return "", fmt.Errorf("set quarantine marker directory permissions: %w", err)
 	}
 	if err := s.syncDirectoryChain(blockedDir); err != nil {
 		return "", err
