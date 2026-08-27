@@ -36,8 +36,8 @@ intelligence:
 	terminal := "metadata-only"
 	network := "ask"
 	resolved, err := Load(LoadOptions{
-		WorkingDir:       root,
-		UserConfigPath:   userPath,
+		WorkingDir:        root,
+		UserConfigPath:    userPath,
 		ProjectConfigPath: projectPath,
 		CLI: Overrides{
 			Record:  RecordOverrides{TerminalInput: &terminal},
@@ -77,8 +77,8 @@ func TestLoadExplicitEmptyIgnoreReplacesDefaults(t *testing.T) {
 	mustWriteConfig(t, userPath, "record:\n  ignore: []\n")
 
 	resolved, err := Load(LoadOptions{
-		WorkingDir:       root,
-		UserConfigPath:   userPath,
+		WorkingDir:        root,
+		UserConfigPath:    userPath,
 		ProjectConfigPath: filepath.Join(root, "missing-project.yaml"),
 	})
 	if err != nil {
@@ -92,8 +92,8 @@ func TestLoadExplicitEmptyIgnoreReplacesDefaults(t *testing.T) {
 func TestLoadMissingFilesFallsBackToDefaults(t *testing.T) {
 	root := t.TempDir()
 	resolved, err := Load(LoadOptions{
-		WorkingDir:       root,
-		UserConfigPath:   filepath.Join(root, "missing-user.yaml"),
+		WorkingDir:        root,
+		UserConfigPath:    filepath.Join(root, "missing-user.yaml"),
 		ProjectConfigPath: filepath.Join(root, "missing-project.yaml"),
 	})
 	if err != nil {
@@ -122,8 +122,8 @@ func TestLoadRejectsUnknownFieldsAndMultipleDocuments(t *testing.T) {
 			configPath := filepath.Join(root, strings.ReplaceAll(test.name, " ", "-")+".yaml")
 			mustWriteConfig(t, configPath, test.content)
 			_, err := Load(LoadOptions{
-				WorkingDir:       root,
-				UserConfigPath:   configPath,
+				WorkingDir:        root,
+				UserConfigPath:    configPath,
 				ProjectConfigPath: filepath.Join(root, "missing-project.yaml"),
 			})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -139,8 +139,8 @@ func TestLoadRejectsInvalidIgnorePattern(t *testing.T) {
 	mustWriteConfig(t, userPath, "record:\n  ignore: [\"../outside\"]\n")
 
 	_, err := Load(LoadOptions{
-		WorkingDir:       root,
-		UserConfigPath:   userPath,
+		WorkingDir:        root,
+		UserConfigPath:    userPath,
 		ProjectConfigPath: filepath.Join(root, "missing-project.yaml"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "record.ignore") {
