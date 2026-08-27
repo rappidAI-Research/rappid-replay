@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	cryptorand "crypto/rand"
 	"fmt"
+	"sync"
 
 	"github.com/klauspost/compress/zstd"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -19,11 +20,15 @@ const maxDecodedObjectBytes = 64 << 20
 
 // Codec transforms canonical plaintext objects into Replay's encrypted local
 // storage representation. Object identity is deliberately computed before
-// compression and encryption.
+// compression and encryption. zstd's reusable encoder/decoder instances are
+// protected explicitly so a LocalStore can safely serve concurrent readers and
+// writers without relying on undocumented codec concurrency behavior.
 type Codec struct {
-	aead    cipher.AEAD
-	encoder *zstd.Encoder
-	decoder *zstd.Decoder
+	aead      cipher.AEAD
+	encoder   *zstd.Encoder
+	decoder   *zstd.Decoder
+	encoderMu sync.Mutex
+	decoderMu sync.Mutex
 }
 
 // NewCodec creates a storage codec using a 256-bit key supplied by Replay's
@@ -61,7 +66,10 @@ func (c *Codec) Seal(plaintext []byte) (ObjectID, []byte, error) {
 		return "", nil, fmt.Errorf("object plaintext is %d bytes, maximum is %d", len(plaintext), maxDecodedObjectBytes)
 	}
 	id := SumObject(plaintext)
+
+	c.encoderMu.Lock()
 	compressed := c.encoder.EncodeAll(plaintext, nil)
+	c.encoderMu.Unlock()
 
 	nonce := make([]byte, chacha20poly1305.NonceSizeX)
 	if _, err := cryptorand.Read(nonce); err != nil {
@@ -96,7 +104,10 @@ func (c *Codec) Open(expected ObjectID, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("authenticate object payload: %w", err)
 	}
+
+	c.decoderMu.Lock()
 	plaintext, err := c.decoder.DecodeAll(compressed, nil)
+	c.decoderMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("decompress object payload: %w", err)
 	}
@@ -110,8 +121,13 @@ func (c *Codec) Open(expected ObjectID, payload []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// Close releases compressor resources.
+// Close releases compressor resources. Callers must stop using the Codec before
+// Close; concurrent Close with Seal/Open is not supported.
 func (c *Codec) Close() error {
+	c.encoderMu.Lock()
+	defer c.encoderMu.Unlock()
+	c.decoderMu.Lock()
+	defer c.decoderMu.Unlock()
 	c.decoder.Close()
 	return c.encoder.Close()
 }
