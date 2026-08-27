@@ -22,15 +22,15 @@ var gearTable = buildGearTable()
 
 // ChunkRef identifies one ordered content chunk and its plaintext byte length.
 type ChunkRef struct {
-	ObjectID	store.ObjectID
-	Size		uint32
+	ObjectID store.ObjectID
+	Size     uint32
 }
 
 // ChunkList is the canonical file payload used when a file is too large to be
 // represented as one blob object.
 type ChunkList struct {
-	Size	int64
-	Chunks	[]ChunkRef
+	Size   int64
+	Chunks []ChunkRef
 }
 
 // ContentDefinedChunks splits data using a deterministic Gear rolling hash.
