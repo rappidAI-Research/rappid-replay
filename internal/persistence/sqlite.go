@@ -48,7 +48,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	db := &DB{sql: sqlDB}
-	if err := db.migrate(ctx); err != nil {
+	if err := db.migrateWithLock(ctx, abs); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
