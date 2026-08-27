@@ -8,6 +8,22 @@ import (
 
 const SchemaV1 = "rappid.replay.event/1"
 
+// Draft is an event observation before persistence assigns the session-local
+// sequence and monotonic timestamp. Draft deliberately has no JSON schema
+// representation so it cannot accidentally be exported as a valid event.
+type Draft struct {
+	SessionID   string
+	WallTimeUTC time.Time
+	Type        string
+	Source      string
+	StateBefore string
+	StateAfter  string
+	ParentEvent string
+	SpanID      string
+	Payload     json.RawMessage
+	Privacy     Privacy
+}
+
 // Event is an immutable, totally ordered observation within one Replay session.
 // Seq, not wall-clock time, defines ordering and causality within a session.
 type Event struct {
@@ -32,16 +48,35 @@ type Privacy struct {
 	Redacted       bool   `json:"redacted,omitempty"`
 }
 
-// New creates the minimum valid v1 envelope. Persistence is responsible for
-// assigning the strictly increasing sequence and monotonic timestamp.
-func New(sessionID, eventType, source string, wallTime time.Time, privacy Privacy, payload json.RawMessage) Event {
-	return Event{
-		Schema:      SchemaV1,
+// NewDraft creates an unstamped event observation. Persistence must validate and
+// stamp it before the value can become a canonical Event.
+func NewDraft(sessionID, eventType, source string, wallTime time.Time, privacy Privacy, payload json.RawMessage) Draft {
+	return Draft{
 		SessionID:   sessionID,
 		WallTimeUTC: wallTime.UTC(),
 		Type:        eventType,
 		Source:      source,
-		Payload:     payload,
+		Payload:     append(json.RawMessage(nil), payload...),
 		Privacy:     privacy,
+	}
+}
+
+// Stamp creates the schema-valid immutable envelope after persistence has
+// reserved a strictly increasing sequence number.
+func (d Draft) Stamp(seq, monotonicNS uint64) Event {
+	return Event{
+		Schema:      SchemaV1,
+		SessionID:   d.SessionID,
+		Seq:         seq,
+		WallTimeUTC: d.WallTimeUTC.UTC(),
+		MonotonicNS: monotonicNS,
+		Type:        d.Type,
+		Source:      d.Source,
+		StateBefore: d.StateBefore,
+		StateAfter:  d.StateAfter,
+		ParentEvent: d.ParentEvent,
+		SpanID:      d.SpanID,
+		Payload:     append(json.RawMessage(nil), d.Payload...),
+		Privacy:     d.Privacy,
 	}
 }
