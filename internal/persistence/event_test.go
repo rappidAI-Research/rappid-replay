@@ -73,15 +73,6 @@ func TestAppendEventRejectsStateSnapshotAndForeignStateReference(t *testing.T) {
 	}
 
 	foreignState, _ := id.NewState()
-	if _, err := db.sql.ExecContext(ctx,
-		"INSERT INTO states(id, session_id, event_seq, root_object_id) VALUES(?, ?, NULL, ?)",
-		foreignState.String(), secondSession.String(), "b3:0000000000000000000000000000000000000000000000000000000000000000",
-	); err == nil {
-		// The FK to objects intentionally prevents this shortcut; insert a
-		// syntactically valid state reference is not necessary for the behavior
-		// under test. A random valid StateID absent from firstSession is enough.
-	}
-
 	draft := event.NewDraft(firstSession.String(), "process.started", "replay.core", now, event.Privacy{Classification: "technical"}, nil)
 	draft.StateBefore = foreignState.String()
 	if _, err := db.AppendEvent(ctx, draft, 1); err == nil || !strings.Contains(err.Error(), "does not belong") {
@@ -112,7 +103,7 @@ func TestAppendEventConcurrentSequencesAreUniqueAndContiguous(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			draft := event.NewDraft(sessionID.String(), "process.output", "test", now.Add(time.Duration(i)*time.Millisecond), event.Privacy{Classification: "technical"}, json.RawMessage(`{"stream":"stdout"}`))
-			persisted, err := db.AppendEvent(ctx, draft, uint64(100+i))
+			persisted, err := db.AppendEvent(ctx, draft, 100)
 			if err != nil {
 				errs <- err
 				return
