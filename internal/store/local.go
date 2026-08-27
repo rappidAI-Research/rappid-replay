@@ -19,7 +19,7 @@ var (
 	// ErrStoreKeyCheck means Replay cannot prove that the supplied master key
 	// belongs to this object store. The store is not opened and no objects are
 	// mutated in this condition.
-	ErrStoreKeyCheck = errors.New("Replay CAS master-key check failed")
+	ErrStoreKeyCheck       = errors.New("Replay CAS master-key check failed")
 	errMalformedStoredFile = errors.New("malformed Replay CAS storage file")
 	errStoredFileChanged   = errors.New("Replay CAS storage file changed while reading")
 )
