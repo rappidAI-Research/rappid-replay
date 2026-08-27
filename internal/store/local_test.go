@@ -63,9 +63,9 @@ func TestLocalStorePutGetAndDeduplicate(t *testing.T) {
 
 	if runtime.GOOS != "windows" {
 		for name, want := range map[string]os.FileMode{
-			root:                 0o700,
+			root:                      0o700,
 			filepath.Join(root, "b3"): 0o700,
-			path:                 0o600,
+			path:                      0o600,
 		} {
 			info, err := os.Stat(name)
 			if err != nil {
