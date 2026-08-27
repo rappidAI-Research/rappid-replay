@@ -35,7 +35,9 @@ func TestOpenAppliesMigrationsAndSafetyPragmas(t *testing.T) {
 		t.Fatalf("foreign_keys = %d, want 1", foreignKeys)
 	}
 
-	for _, table := range []string{"schema_migrations", "sessions", "objects", "states", "events", "environments"} {
+	for _, table := range []string{
+		"schema_migrations", "sessions", "objects", "states", "state_objects", "events", "environments",
+	} {
 		var count int
 		if err := db.sql.QueryRowContext(ctx,
 			"SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name=?", table,
@@ -51,8 +53,8 @@ func TestOpenAppliesMigrationsAndSafetyPragmas(t *testing.T) {
 	if err := db.sql.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations").Scan(&migrations); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrations != 1 {
-		t.Fatalf("migration count = %d, want 1", migrations)
+	if migrations != 2 {
+		t.Fatalf("migration count = %d, want 2", migrations)
 	}
 }
 
@@ -78,7 +80,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 	if err := second.sql.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations").Scan(&migrations); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrations != 1 {
-		t.Fatalf("migration count after reopen = %d, want 1", migrations)
+	if migrations != 2 {
+		t.Fatalf("migration count after reopen = %d, want 2", migrations)
 	}
 }
