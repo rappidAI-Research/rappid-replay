@@ -47,10 +47,10 @@ type IntelligenceOverrides struct {
 // LoadOptions controls configuration discovery. Empty explicit paths select the
 // architecture-defined defaults rather than disabling a layer.
 type LoadOptions struct {
-	WorkingDir       string
-	UserConfigPath   string
+	WorkingDir        string
+	UserConfigPath    string
 	ProjectConfigPath string
-	CLI              Overrides
+	CLI               Overrides
 }
 
 // Resolution records the effective configuration and which filesystem layers
