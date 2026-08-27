@@ -45,7 +45,6 @@ func NewCodec(key []byte) (*Codec, error) {
 	decoder, err := zstd.NewReader(nil,
 		zstd.WithDecoderConcurrency(1),
 		zstd.WithDecoderMaxMemory(maxDecodedObjectBytes),
-		zstd.WithDecodeAllCapLimit(true),
 	)
 	if err != nil {
 		_ = encoder.Close()
