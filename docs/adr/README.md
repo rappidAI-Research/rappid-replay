@@ -18,5 +18,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-014 — Canonical recursive state trees — **Accepted**
 - ADR-015 — Verified state publication is atomic — **Accepted**
 - ADR-016 — Content-defined chunking for large files — **Accepted**
+- ADR-017 — Configuration layering and workspace ignore semantics — **Accepted**
 
 ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
