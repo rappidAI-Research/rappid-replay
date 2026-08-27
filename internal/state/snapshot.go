@@ -37,11 +37,11 @@ type Snapshotter struct {
 // Snapshot identifies a fully persisted workspace state. RootTreeID is visible
 // only after every reachable child object has been written successfully.
 type Snapshot struct {
-	RootTreeID   store.ObjectID
-	Files        int
+	RootTreeID  store.ObjectID
+	Files       int
 	Directories int
-	Symlinks     int
-	FileBytes    int64
+	Symlinks    int
+	FileBytes   int64
 }
 
 func (s Snapshotter) Capture(root string) (Snapshot, error) {
