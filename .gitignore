@@ -1,0 +1,14 @@
+# Go
+/bin/
+*.test
+*.out
+coverage.out
+
+# Replay local data
+.rappid/data/
+*.rplay
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
