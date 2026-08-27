@@ -10,7 +10,7 @@ The deterministic core must remain fully functional without AI. Local AI is an o
 
 Early implementation. Architecture baseline: Replay Architecture v1.0 (27 August 2026).
 
-Track A (Foundations) is in progress. The repository now contains the initial event/state schemas, typed safety defaults, UUIDv7 session IDs, SQLite migrations, and an encrypted BLAKE3-addressed local object store using zstd + XChaCha20-Poly1305.
+Track A (Foundations) is in progress. The repository now contains the initial event/state schemas, typed safety defaults, UUIDv7 session IDs, SQLite migrations, and an encrypted BLAKE3-addressed local object store using zstd + XChaCha20-Poly1305. OS credential-store integration and full state-tree materialization are not implemented yet.
 
 ## Core principles
 
