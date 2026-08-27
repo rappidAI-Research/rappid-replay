@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -118,4 +119,110 @@ func TestSnapshotStoresSymlinkTargetWithoutFollowing(t *testing.T) {
 		return
 	}
 	t.Fatal("link entry not found in root tree")
+}
+
+func TestSnapshotDoesNotFollowSymlinkOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside-secret.txt")
+	if err := os.WriteFile(outside, []byte("must-never-be-read-as-file-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "outside-link")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink creation unavailable on Windows runner: %v", err)
+		}
+		t.Fatal(err)
+	}
+
+	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x28}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cas.Close() })
+
+	snapshot, err := (Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Files != 0 || snapshot.Symlinks != 1 {
+		t.Fatalf("snapshot stats = %+v, want one link and no files", snapshot)
+	}
+
+	rootObj, err := cas.GetObject(snapshot.RootTreeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := ParseCanonicalTree(rootObj.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Entries) != 1 || tree.Entries[0].Kind != EntrySymlink {
+		t.Fatalf("root tree = %+v, want one symlink", tree.Entries)
+	}
+	linkObj, err := cas.GetObject(tree.Entries[0].ObjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkObj.Payload) != outside {
+		t.Fatalf("recorded link target = %q, want %q", linkObj.Payload, outside)
+	}
+}
+
+func TestSnapshotAlwaysExcludesGitMetadata(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.Mkdir(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git", "config"), []byte("sensitive git internals"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "tracked.txt"), []byte("tracked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x29}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cas.Close() })
+
+	snapshot, err := (Snapshotter{CAS: cas}).Capture(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Files != 1 || snapshot.Directories != 0 {
+		t.Fatalf("snapshot stats = %+v, .git must be excluded unconditionally", snapshot)
+	}
+	rootObj, err := cas.GetObject(snapshot.RootTreeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := ParseCanonicalTree(rootObj.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree.Entries) != 1 || string(tree.Entries[0].Name) != "tracked.txt" {
+		t.Fatalf("root entries = %+v, want only tracked.txt", tree.Entries)
+	}
+}
+
+func TestSnapshotRejectsSymlinkWorkspaceRoot(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skipf("symlink creation unavailable on Windows runner: %v", err)
+		}
+		t.Fatal(err)
+	}
+	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x30}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cas.Close()
+
+	_, err = (Snapshotter{CAS: cas}).Capture(link)
+	if err == nil || errors.Is(err, ErrWorkspaceChanged) {
+		t.Fatalf("Capture(symlink root) error = %v, want explicit invalid-root error", err)
+	}
 }
