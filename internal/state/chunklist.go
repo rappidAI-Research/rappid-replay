@@ -54,9 +54,10 @@ func ContentDefinedChunks(data []byte) [][]byte {
 }
 
 // StreamContentDefinedChunks applies the exact same boundary algorithm as
-// ContentDefinedChunks without retaining the complete input in memory. At most
-// one ChunkMaxSize chunk plus a small read buffer is live at a time. The emit
-// callback receives an independent chunk buffer and may retain it.
+// ContentDefinedChunks without retaining the complete input in memory. The v1
+// canonical algorithm intentionally leaves a final remainder of at most
+// ChunkMaxSize intact, so the streaming implementation keeps enough lookahead
+// to distinguish that final remainder before searching it for a boundary.
 func StreamContentDefinedChunks(r io.Reader, emit func([]byte) error) (int64, error) {
 	if r == nil {
 		return 0, fmt.Errorf("chunk reader is required")
@@ -66,64 +67,81 @@ func StreamContentDefinedChunks(r io.Reader, emit func([]byte) error) (int64, er
 	}
 
 	readBuffer := make([]byte, chunkStreamReadBuffer)
-	chunk := make([]byte, 0, ChunkMaxSize)
+	// A read can take the lookahead buffer slightly past ChunkMaxSize. It remains
+	// bounded by ChunkMaxSize + chunkStreamReadBuffer and is compacted after each
+	// emitted chunk.
+	buffer := make([]byte, 0, ChunkMaxSize+chunkStreamReadBuffer)
 	var total int64
-	var rolling uint64
 	emptyReads := 0
-	const boundaryMask = uint64(ChunkTargetSize - 1)
+	eof := false
 
-	flush := func() error {
-		if len(chunk) == 0 {
-			return nil
+	emitRange := func(end int, final bool) error {
+		if end <= 0 || end > len(buffer) {
+			return fmt.Errorf("invalid streaming chunk boundary %d for %d buffered bytes", end, len(buffer))
 		}
-		out := append([]byte(nil), chunk...)
+		out := append([]byte(nil), buffer[:end]...)
 		if err := emit(out); err != nil {
-			return err
+			if final {
+				return fmt.Errorf("emit final content-defined chunk: %w", err)
+			}
+			return fmt.Errorf("emit content-defined chunk: %w", err)
 		}
-		chunk = chunk[:0]
-		rolling = 0
+		copy(buffer, buffer[end:])
+		buffer = buffer[:len(buffer)-end]
 		return nil
 	}
 
 	for {
-		n, readErr := r.Read(readBuffer)
-		if n > 0 {
-			emptyReads = 0
-			for _, value := range readBuffer[:n] {
-				chunk = append(chunk, value)
-				total++
-
-				// The canonical v1 algorithm begins rolling only after the
-				// first ChunkMinSize bytes of each chunk. This mirrors
-				// nextChunkBoundary exactly.
-				if len(chunk) > ChunkMinSize {
-					rolling = (rolling << 1) + gearTable[value]
-					if rolling&boundaryMask == 0 || len(chunk) >= ChunkMaxSize {
-						if err := flush(); err != nil {
-							return total, fmt.Errorf("emit content-defined chunk: %w", err)
-						}
-					}
+		// The non-streaming algorithm only searches for a content boundary if
+		// more than ChunkMaxSize bytes remain. Read until that fact is known or
+		// EOF proves that the current buffer is the final intact remainder.
+		for !eof && len(buffer) <= ChunkMaxSize {
+			n, readErr := r.Read(readBuffer)
+			if n > 0 {
+				emptyReads = 0
+				if total > math.MaxInt64-int64(n) {
+					return total, fmt.Errorf("content-defined chunk stream exceeds int64 size")
+				}
+				buffer = append(buffer, readBuffer[:n]...)
+				total += int64(n)
+			} else if readErr == nil {
+				emptyReads++
+				if emptyReads >= 100 {
+					return total, io.ErrNoProgress
 				}
 			}
-		} else if readErr == nil {
-			emptyReads++
-			if emptyReads >= 100 {
-				return total, io.ErrNoProgress
+
+			if readErr != nil {
+				if errors.Is(readErr, io.EOF) {
+					eof = true
+					break
+				}
+				return total, fmt.Errorf("read content-defined chunk stream: %w", readErr)
 			}
 		}
 
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
+		if len(buffer) == 0 {
+			if eof {
+				return total, nil
 			}
-			return total, fmt.Errorf("read content-defined chunk stream: %w", readErr)
+			continue
+		}
+
+		if eof && len(buffer) <= ChunkMaxSize {
+			if err := emitRange(len(buffer), true); err != nil {
+				return total, err
+			}
+			return total, nil
+		}
+
+		// len(buffer) > ChunkMaxSize, exactly the condition under which the
+		// canonical in-memory function calls nextChunkBoundary and searches the
+		// first max-sized window for the earliest content-dependent boundary.
+		end := nextChunkBoundary(buffer, 0)
+		if err := emitRange(end, false); err != nil {
+			return total, err
 		}
 	}
-
-	if err := flush(); err != nil {
-		return total, fmt.Errorf("emit final content-defined chunk: %w", err)
-	}
-	return total, nil
 }
 
 func nextChunkBoundary(data []byte, start int) int {
@@ -227,7 +245,7 @@ func DecodeChunkList(payload []byte) (ChunkList, error) {
 	if count == 0 {
 		return ChunkList{}, fmt.Errorf("chunk list contains no chunks")
 	}
-	if uint64(count) > uint64((len(payload)-headerSize)/chunkEntrySize)+1 {
+	if uint64(count) > uint64((len(payload)-headerSize)/chunkEntrySize) {
 		return ChunkList{}, fmt.Errorf("chunk list count exceeds payload bounds")
 	}
 	expected := headerSize + int(count)*chunkEntrySize
