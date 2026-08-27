@@ -72,13 +72,19 @@ func NewLocalStore(root string, key []byte) (*LocalStore, error) {
 }
 
 // Put stores plaintext if its content ID is not already present. An existing
-// object is verified before it is reused; corruption is quarantined and is
-// never silently overwritten with a replacement object in the same operation.
+// object is verified before it is reused; corruption is quarantined and remains
+// blocked until a future explicit repair flow clears its quarantine marker.
 func (s *LocalStore) Put(plaintext []byte) (ObjectID, error) {
 	id, payload, err := s.codec.Seal(plaintext)
 	if err != nil {
 		return "", err
 	}
+	if blocked, err := s.isQuarantined(id); err != nil {
+		return "", err
+	} else if blocked {
+		return "", fmt.Errorf("%w: object %s is quarantined and requires explicit repair", ErrCorruptObject, id)
+	}
+
 	target, err := s.objectPath(id)
 	if err != nil {
 		return "", err
@@ -112,6 +118,12 @@ func (s *LocalStore) Put(plaintext []byte) (ObjectID, error) {
 // are quarantined only after store-open key verification has succeeded, which
 // avoids mistaking a wrong master key for per-object corruption.
 func (s *LocalStore) Get(id ObjectID) ([]byte, error) {
+	if blocked, err := s.isQuarantined(id); err != nil {
+		return nil, err
+	} else if blocked {
+		return nil, fmt.Errorf("%w: object %s is quarantined", ErrCorruptObject, id)
+	}
+
 	path, err := s.objectPath(id)
 	if err != nil {
 		return nil, err
@@ -335,14 +347,41 @@ func (s *LocalStore) syncDirectoryChain(dir string) error {
 	}
 }
 
+func (s *LocalStore) quarantineBlockPath(id ObjectID) string {
+	digest := strings.TrimPrefix(id.String(), objectIDPrefix)
+	return filepath.Join(s.root, "quarantine", "blocked", digest+".blocked")
+}
+
+func (s *LocalStore) isQuarantined(id ObjectID) (bool, error) {
+	marker := s.quarantineBlockPath(id)
+	_, err := os.Stat(marker)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat quarantine marker for %s: %w", id, err)
+}
+
 func (s *LocalStore) quarantineCorruptObject(id ObjectID, source string) (string, error) {
 	quarantineDir := filepath.Join(s.root, "quarantine")
-	if err := os.MkdirAll(quarantineDir, 0o700); err != nil {
+	blockedDir := filepath.Join(quarantineDir, "blocked")
+	if err := os.MkdirAll(blockedDir, 0o700); err != nil {
 		return "", fmt.Errorf("create quarantine directory: %w", err)
 	}
-	if err := s.syncDirectoryChain(quarantineDir); err != nil {
+	if err := s.syncDirectoryChain(blockedDir); err != nil {
 		return "", err
 	}
+
+	// Persist the block marker before moving the bad bytes. A crash after the
+	// quarantine decision therefore cannot make a subsequent Put silently heal
+	// the object and hide that a historical state experienced corruption.
+	marker := s.quarantineBlockPath(id)
+	if _, err := s.commitPayloadNoReplace(marker, []byte("quarantined\n")); err != nil {
+		return "", fmt.Errorf("persist quarantine marker: %w", err)
+	}
+
 	digest := strings.TrimPrefix(id.String(), objectIDPrefix)
 	target := filepath.Join(quarantineDir, fmt.Sprintf("%s-%d.rpo", digest, time.Now().UTC().UnixNano()))
 	if err := os.Rename(source, target); err != nil {
