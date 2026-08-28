@@ -173,8 +173,10 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 
 	streamGate := make(chan struct{})
-	command.Stdout = gatedWriter{ready: streamGate, writer: streamEventWriter{sink: sink, stream: "stdout", output: options.Stdout}}
-	command.Stderr = gatedWriter{ready: streamGate, writer: streamEventWriter{sink: sink, stream: "stderr", output: options.Stderr}}
+	stdoutRecorder := &streamEventWriter{sink: sink, stream: "stdout", output: options.Stdout}
+	stderrRecorder := &streamEventWriter{sink: sink, stream: "stderr", output: options.Stderr}
+	command.Stdout = gatedWriter{ready: streamGate, writer: stdoutRecorder}
+	command.Stderr = gatedWriter{ready: streamGate, writer: stderrRecorder}
 
 	if err := command.Start(); err != nil {
 		close(streamGate)
@@ -190,6 +192,12 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	close(streamGate)
 
 	waitErr := command.Wait()
+	// Wait does not return until os/exec's stdout/stderr copy goroutines have
+	// finished. Flush any unterminated segments now so every terminal event is
+	// durably ordered before process.exited.
+	_ = stdoutRecorder.Flush()
+	_ = stderrRecorder.Flush()
+
 	exitCode := 0
 	processSuccess := waitErr == nil
 	if waitErr != nil {
