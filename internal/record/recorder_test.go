@@ -93,20 +93,56 @@ func TestGenericRecorderCapturesLifecycleStreamsAndState(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(eventTypes) < 10 {
-		t.Fatalf("event types = %v, want complete lifecycle", eventTypes)
+	if len(eventTypes) < 11 {
+		t.Fatalf("event types = %v, want complete lifecycle with artifact evidence", eventTypes)
 	}
 	if eventTypes[0] != "session.started" || eventTypes[1] != "state.snapshot" ||
 		eventTypes[2] != "session.environment" || eventTypes[3] != "git.context" ||
 		eventTypes[4] != "process.started" {
 		t.Fatalf("initial event order = %v", eventTypes)
 	}
-	if eventTypes[len(eventTypes)-3] != "process.exited" || eventTypes[len(eventTypes)-2] != "state.snapshot" || eventTypes[len(eventTypes)-1] != "session.completed" {
-		t.Fatalf("terminal event order = %v", eventTypes)
+	if eventTypes[len(eventTypes)-1] != "session.completed" {
+		t.Fatalf("last event = %q, want session.completed: %v", eventTypes[len(eventTypes)-1], eventTypes)
+	}
+	processExitIndex, finalSnapshotIndex := -1, -1
+	for index, eventType := range eventTypes {
+		if eventType == "process.exited" {
+			processExitIndex = index
+		}
+		if eventType == "state.snapshot" {
+			finalSnapshotIndex = index
+		}
+	}
+	if processExitIndex < 0 || finalSnapshotIndex <= processExitIndex || finalSnapshotIndex >= len(eventTypes)-1 {
+		t.Fatalf("process exit/final snapshot order invalid: %v", eventTypes)
 	}
 	joined := strings.Join(eventTypes, ",")
 	if !strings.Contains(joined, "terminal.stdout") || !strings.Contains(joined, "terminal.stderr") {
 		t.Fatalf("stream events missing from %v", eventTypes)
+	}
+	if !strings.Contains(joined, "artifact.discovered") {
+		t.Fatalf("artifact discovery event missing from %v", eventTypes)
+	}
+
+	var artifactCount int
+	if err := raw.QueryRowContext(ctx,
+		"SELECT COUNT(1) FROM artifacts WHERE session_id = ?", result.SessionID.String(),
+	).Scan(&artifactCount); err != nil {
+		t.Fatal(err)
+	}
+	if artifactCount != 1 {
+		t.Fatalf("artifact count = %d, want 1", artifactCount)
+	}
+	var artifactPath, artifactChange, artifactObject string
+	if err := raw.QueryRowContext(ctx, `
+SELECT path_display, change_kind, object_id
+FROM artifacts WHERE session_id = ? LIMIT 1`, result.SessionID.String()).Scan(
+		&artifactPath, &artifactChange, &artifactObject,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if artifactPath != "after.txt" || artifactChange != string(persistence.ArtifactCreated) || artifactObject == "" {
+		t.Fatalf("artifact provenance = %q/%q/%q", artifactPath, artifactChange, artifactObject)
 	}
 
 	var finalRoot string

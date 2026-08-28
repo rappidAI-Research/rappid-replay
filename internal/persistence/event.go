@@ -16,14 +16,17 @@ var eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_.-]*$
 
 // AppendEvent validates an event draft, atomically reserves the next strictly
 // increasing session sequence, and persists the fully stamped envelope. State
-// snapshots are intentionally excluded because they must be published together
-// with their state/object metadata through PublishSnapshot.
+// snapshots and artifact discoveries are intentionally excluded because their
+// events must be published together with matching metadata rows.
 func (db *DB) AppendEvent(ctx context.Context, draft event.Draft, monotonicNS uint64) (event.Event, error) {
 	if err := validateEventDraft(draft, monotonicNS); err != nil {
 		return event.Event{}, err
 	}
-	if draft.Type == "state.snapshot" {
+	switch draft.Type {
+	case "state.snapshot":
 		return event.Event{}, fmt.Errorf("state.snapshot events must be created through PublishSnapshot")
+	case ArtifactEventType:
+		return event.Event{}, fmt.Errorf("%s events must be created through PublishArtifact", ArtifactEventType)
 	}
 
 	tx, err := db.sql.BeginTx(ctx, nil)

@@ -25,5 +25,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-021 — Privacy-filtered execution environment capture — **Accepted**
 - ADR-022 — Cross-platform sampled process-tree discovery — **Accepted**
 - ADR-023 — Cross-platform PTY recording — **Accepted**
+- ADR-024 — Workspace artifact discovery is derived from published state transitions — **Accepted**
 
 ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
