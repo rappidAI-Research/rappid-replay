@@ -17,6 +17,7 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/internal/state"
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
+	"github.com/rappidAI-Research/rappid-replay/internal/terminal"
 )
 
 const snapshotAttempts = 3
@@ -27,19 +28,22 @@ type Dependencies struct {
 	CAS *store.LocalStore
 }
 
-// Options describes a generic child command recording. TerminalInput records
-// the configured privacy policy; full byte-level stdin capture is deliberately
-// rejected until the PTY recorder lands rather than silently providing weaker
-// evidence than requested.
+// Options describes a generic child command recording. PTY enables a real
+// pseudo-terminal rather than the non-interactive stdout/stderr pipe fallback.
+// Full input capture is only legal with PTY because the pipe recorder cannot
+// provide interactive terminal semantics.
 type Options struct {
-	Command       []string
-	WorkingDir    string
-	Ignore        []string
-	TerminalInput string
-	Stdin         io.Reader
-	Stdout        io.Writer
-	Stderr        io.Writer
-	Env           []string
+	Command             []string
+	WorkingDir          string
+	Ignore              []string
+	TerminalInput       string
+	PTY                 bool
+	InitialTerminalSize terminal.Size
+	TerminalResize      <-chan terminal.Size
+	Stdin               io.Reader
+	Stdout              io.Writer
+	Stderr              io.Writer
+	Env                 []string
 }
 
 // Result identifies the durable session and its state boundary after recording.
@@ -72,10 +76,10 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	if options.TerminalInput == "" {
 		options.TerminalInput = "metadata-only"
 	}
-	if options.TerminalInput == "full" {
-		return Result{}, fmt.Errorf("full terminal input capture requires the PTY recorder and is not available in the generic pipe recorder")
+	if options.TerminalInput == "full" && !options.PTY {
+		return Result{}, fmt.Errorf("full terminal input capture requires the PTY recorder")
 	}
-	if options.TerminalInput != "metadata-only" && options.TerminalInput != "off" {
+	if options.TerminalInput != "metadata-only" && options.TerminalInput != "off" && options.TerminalInput != "full" {
 		return Result{}, fmt.Errorf("unsupported terminal input policy %q", options.TerminalInput)
 	}
 
@@ -135,7 +139,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		Command:       recordedCommand,
 		CWD:           absWorkingDir,
 		Recorder:      "generic",
-		PTY:           false,
+		PTY:           options.PTY,
 		TerminalInput: options.TerminalInput,
 		StdinAttached: options.Stdin != nil,
 	}, commandRedacted); err != nil {
@@ -202,62 +206,29 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	// responsibility.
 	commandCtx, cancelCommand := context.WithCancel(ctx)
 	defer cancelCommand()
-	command := exec.CommandContext(commandCtx, options.Command[0], options.Command[1:]...)
-	command.Dir = absWorkingDir
-	command.Stdin = options.Stdin
-	if options.Env != nil {
-		command.Env = append([]string(nil), options.Env...)
+	execution, err := startRecordedExecution(
+		commandCtx, cancelCommand, sink, options, absWorkingDir, recordedCommand, commandRedacted,
+	)
+	if err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
 	}
+	pid := execution.PID()
 
-	streamGate := make(chan struct{})
-	stdoutRecorder := &streamEventWriter{sink: sink, stream: "stdout", output: options.Stdout}
-	stderrRecorder := &streamEventWriter{sink: sink, stream: "stderr", output: options.Stderr}
-	command.Stdout = gatedWriter{ready: streamGate, writer: stdoutRecorder}
-	command.Stderr = gatedWriter{ready: streamGate, writer: stderrRecorder}
-
-	if err := command.Start(); err != nil {
-		close(streamGate)
-		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("start recorded command: %w", err))
-	}
-	pid := command.Process.Pid
-	startEventErr := sink.appendTechnical("process.started", struct {
-		PID     int      `json:"pid"`
-		Path    string   `json:"path"`
-		Command []string `json:"command"`
-		CWD     string   `json:"cwd"`
-	}{PID: pid, Path: command.Path, Command: recordedCommand, CWD: absWorkingDir}, commandRedacted)
-	close(streamGate)
-	if startEventErr != nil {
-		// Once the durable process boundary cannot be recorded, continuing the
-		// child would create effects Replay cannot place on its timeline.
-		cancelCommand()
-	}
-
-	var processTree *processTreeMonitor
-	if startEventErr == nil {
-		processTree = startProcessTreeMonitor(commandCtx, sink, pid, cancelCommand)
-	}
+	processTree := startProcessTreeMonitor(commandCtx, sink, pid, cancelCommand)
 
 	var checkpoints *checkpointLoop
-	if watcher != nil && startEventErr == nil {
+	if watcher != nil {
 		checkpoints = startCheckpointLoop(
 			commandCtx, deps, sink, snapshotter, absWorkingDir, sessionID, position,
 			watcher, cancelCommand,
 		)
 	}
 
-	waitErr := command.Wait()
-	// Wait does not return until os/exec's stdout/stderr copy goroutines have
-	// finished. Flush any unterminated segments now so every terminal event is
-	// durably ordered before process.exited.
-	_ = stdoutRecorder.Flush()
-	_ = stderrRecorder.Flush()
+	waitErr := execution.Wait()
+	executionErr := execution.Finalize()
 
-	var processTreeErr error
-	if processTree != nil {
-		processTreeResult := processTree.Stop()
-		processTreeErr = processTreeResult.Err
-	}
+	processTreeResult := processTree.Stop()
+	processTreeErr := processTreeResult.Err
 
 	var checkpointErr error
 	if checkpoints != nil {
@@ -281,10 +252,10 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
-		} else if commandCtx.Err() != nil && (ctx.Err() != nil || startEventErr != nil || processTreeErr != nil || checkpointErr != nil) {
-			// exec.CommandContext may surface a context-driven termination without
-			// an ExitError on some platforms. Preserve a technical exit boundary;
-			// the session is aborted below with the actual recorder/context cause.
+		} else if commandCtx.Err() != nil && (ctx.Err() != nil || executionErr != nil || processTreeErr != nil || checkpointErr != nil) {
+			// Command cancellation may surface without ExitError on some platforms.
+			// Preserve a technical exit boundary; the session is aborted below with
+			// the recorder/context cause that triggered cancellation.
 			exitCode = -1
 		} else {
 			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("wait for recorded command: %w", waitErr))
@@ -292,23 +263,27 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 	result.ExitCode = exitCode
 
+	var timelineErr error
 	if err := sink.append("process.exited", struct {
 		PID      int  `json:"pid"`
 		ExitCode int  `json:"exit_code"`
 		Success  bool `json:"success"`
-	}{PID: pid, ExitCode: exitCode, Success: processSuccess}); err != nil && startEventErr == nil {
-		startEventErr = err
+	}{PID: pid, ExitCode: exitCode, Success: processSuccess}); err != nil {
+		timelineErr = err
 	}
-	if err := sink.err(); err != nil && startEventErr == nil {
-		startEventErr = err
+	if err := sink.err(); err != nil && timelineErr == nil {
+		timelineErr = err
 	}
 
 	cleanupCtx := context.WithoutCancel(ctx)
 	if ctx.Err() != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("recorded command context ended: %w", ctx.Err()))
 	}
-	if startEventErr != nil {
-		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, startEventErr)
+	if timelineErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, timelineErr)
+	}
+	if executionErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, executionErr)
 	}
 	if processTreeErr != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, processTreeErr)
