@@ -103,13 +103,13 @@ func runProcessTreeMonitor(
 				return fatal(err)
 			}
 			if err := sink.append("process.tree", struct {
-				RootPID            int  `json:"root_pid"`
-				Discovered         int  `json:"discovered"`
-				Scans              int  `json:"scans"`
-				ScanErrors         int  `json:"scan_errors"`
-				Sampled            bool `json:"sampled"`
-				Complete           bool `json:"complete"`
-				IntervalMillis     int  `json:"interval_ms"`
+				RootPID             int  `json:"root_pid"`
+				Discovered          int  `json:"discovered"`
+				Scans               int  `json:"scans"`
+				ScanErrors          int  `json:"scan_errors"`
+				Sampled             bool `json:"sampled"`
+				Complete            bool `json:"complete"`
+				IntervalMillis      int  `json:"interval_ms"`
 				ShortLivedMayBeLost bool `json:"short_lived_may_be_lost"`
 			}{
 				RootPID: rootPID, Discovered: result.Discovered, Scans: result.Scans,
