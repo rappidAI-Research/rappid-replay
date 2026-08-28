@@ -281,8 +281,8 @@ func (db *DB) backfillAndValidateMigrationChecksums(ctx context.Context, migrati
 			}
 			continue
 		}
-		if pinned, ok := legacyMigrationChecksums[item.version]; ok && pinned != item.checksum {
-			return fmt.Errorf("legacy migration %s embedded checksum %s does not match pinned release checksum %s", item.name, item.checksum, pinned)
+		if err := validateLegacyMigrationBaseline(item); err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx,
 			"UPDATE schema_migrations SET checksum = ? WHERE version = ? AND name = ? AND checksum IS NULL",
