@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	sessionPrefix = "rp_"
-	statePrefix   = "st_"
+	sessionPrefix  = "rp_"
+	statePrefix    = "st_"
+	artifactPrefix = "ar_"
 )
 
 // SessionID identifies one immutable Replay session. The UUIDv7 payload keeps
@@ -22,6 +23,11 @@ type SessionID string
 // remains the root CAS object ID; StateID identifies the publication record and
 // lets identical workspace contents appear in more than one session.
 type StateID string
+
+// ArtifactID identifies one immutable artifact observation. Artifact content
+// identity remains the referenced CAS object ID; ArtifactID identifies the
+// provenance record tying that object to a path and state transition.
+type ArtifactID string
 
 // NewSession returns a cryptographically-random UUIDv7-backed session ID.
 func NewSession() (SessionID, error) {
@@ -59,6 +65,24 @@ func ParseState(s string) (StateID, error) {
 	return StateID(value), nil
 }
 
+// NewArtifact returns a cryptographically-random UUIDv7-backed artifact ID.
+func NewArtifact() (ArtifactID, error) {
+	value, err := newUUIDv7(artifactPrefix, "artifact")
+	if err != nil {
+		return "", err
+	}
+	return ArtifactID(value), nil
+}
+
+// ParseArtifact validates the canonical ar_<uuidv7> representation.
+func ParseArtifact(s string) (ArtifactID, error) {
+	value, err := parseUUIDv7(s, artifactPrefix, "artifact")
+	if err != nil {
+		return "", err
+	}
+	return ArtifactID(value), nil
+}
+
 func newUUIDv7(prefix, domain string) (string, error) {
 	u, err := uuid.NewV7()
 	if err != nil {
@@ -85,5 +109,6 @@ func parseUUIDv7(s, prefix, domain string) (string, error) {
 	return prefix + u.String(), nil
 }
 
-func (s SessionID) String() string { return string(s) }
-func (s StateID) String() string   { return string(s) }
+func (s SessionID) String() string   { return string(s) }
+func (s StateID) String() string     { return string(s) }
+func (s ArtifactID) String() string  { return string(s) }
