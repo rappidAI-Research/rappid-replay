@@ -8,14 +8,25 @@ import (
 const EnvironmentRedactionMarker = "[REDACTED]"
 
 var sensitiveEnvironmentTokens = map[string]struct{}{
-	"PASSWORD":    {},
-	"PASSWD":      {},
-	"SECRET":      {},
-	"TOKEN":       {},
-	"CREDENTIAL":  {},
-	"CREDENTIALS": {},
-	"COOKIE":      {},
 	"AUTHORIZATION": {},
+	"COOKIE":        {},
+	"CREDENTIAL":    {},
+	"CREDENTIALS":   {},
+	"DSN":           {},
+	"PASS":          {},
+	"PASSWD":        {},
+	"PASSWORD":      {},
+	"SECRET":        {},
+	"TOKEN":         {},
+}
+
+var sensitiveEnvironmentExactNames = map[string]struct{}{
+	"DATABASE_URL": {},
+	"MONGODB_URI":  {},
+	"MONGO_URL":    {},
+	"MYSQL_URL":    {},
+	"POSTGRES_URL": {},
+	"REDIS_URL":    {},
 }
 
 // RedactEnvironmentValue applies a conservative name-based policy before the
@@ -38,6 +49,9 @@ func SensitiveEnvironmentName(name string) bool {
 	normalized := normalizeEnvironmentName(name)
 	if normalized == "" {
 		return false
+	}
+	if _, ok := sensitiveEnvironmentExactNames[normalized]; ok {
+		return true
 	}
 	for _, token := range strings.Split(normalized, "_") {
 		if _, ok := sensitiveEnvironmentTokens[token]; ok {
