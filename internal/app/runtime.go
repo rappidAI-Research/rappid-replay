@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
@@ -73,6 +74,44 @@ func ResolveLayout(root string) (Layout, error) {
 		Temp:      filepath.Join(abs, "temp"),
 		Logs:      filepath.Join(abs, "logs"),
 	}, nil
+}
+
+// ValidateWorkspaceSeparation rejects a Replay data root that is the workspace
+// itself or one of its descendants. Otherwise recording Replay's own SQLite/CAS
+// mutations could recursively perturb the state being captured.
+func ValidateWorkspaceSeparation(workspace, dataRoot string) error {
+	if workspace == "" || dataRoot == "" {
+		return fmt.Errorf("workspace and Replay data root are required")
+	}
+	workspacePath, err := canonicalExistingOrAbsolute(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve workspace separation path: %w", err)
+	}
+	dataPath, err := canonicalExistingOrAbsolute(dataRoot)
+	if err != nil {
+		return fmt.Errorf("resolve Replay data separation path: %w", err)
+	}
+	rel, err := filepath.Rel(workspacePath, dataPath)
+	if err != nil {
+		return fmt.Errorf("compare workspace and Replay data paths: %w", err)
+	}
+	if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))) {
+		return fmt.Errorf("Replay data directory %q must not be inside recorded workspace %q", dataPath, workspacePath)
+	}
+	return nil
+}
+
+func canonicalExistingOrAbsolute(name string) (string, error) {
+	abs, err := filepath.Abs(name)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
 }
 
 // Runtime owns the durable local stores used by command handlers.
