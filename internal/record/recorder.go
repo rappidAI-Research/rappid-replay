@@ -233,6 +233,11 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		cancelCommand()
 	}
 
+	var processTree *processTreeMonitor
+	if startEventErr == nil {
+		processTree = startProcessTreeMonitor(commandCtx, sink, pid, cancelCommand)
+	}
+
 	var checkpoints *checkpointLoop
 	if watcher != nil && startEventErr == nil {
 		checkpoints = startCheckpointLoop(
@@ -247,6 +252,12 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	// durably ordered before process.exited.
 	_ = stdoutRecorder.Flush()
 	_ = stderrRecorder.Flush()
+
+	var processTreeErr error
+	if processTree != nil {
+		processTreeResult := processTree.Stop()
+		processTreeErr = processTreeResult.Err
+	}
 
 	var checkpointErr error
 	if checkpoints != nil {
@@ -270,7 +281,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
-		} else if commandCtx.Err() != nil && (ctx.Err() != nil || startEventErr != nil || checkpointErr != nil) {
+		} else if commandCtx.Err() != nil && (ctx.Err() != nil || startEventErr != nil || processTreeErr != nil || checkpointErr != nil) {
 			// exec.CommandContext may surface a context-driven termination without
 			// an ExitError on some platforms. Preserve a technical exit boundary;
 			// the session is aborted below with the actual recorder/context cause.
@@ -298,6 +309,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 	if startEventErr != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, startEventErr)
+	}
+	if processTreeErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, processTreeErr)
 	}
 	if checkpointErr != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, checkpointErr)
