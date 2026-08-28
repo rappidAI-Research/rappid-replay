@@ -3,6 +3,7 @@ module github.com/rappidAI-Research/rappid-replay
 go 1.27
 
 require (
+	github.com/aymanbagabas/go-pty v0.2.3
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gofrs/flock v0.13.0
 	github.com/google/uuid v1.6.0
@@ -11,6 +12,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.45.0
 	lukechampine.com/blake3 v1.4.1
 	modernc.org/sqlite v1.57.0
 )
