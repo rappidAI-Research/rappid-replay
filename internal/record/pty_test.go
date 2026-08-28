@@ -1,7 +1,6 @@
 package record
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -56,8 +55,8 @@ func TestPTYRecorderCapturesCombinedOutputInputAndResize(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Fatalf("exit code = %d, want 0", result.ExitCode)
 	}
-	if !strings.Contains(output.String(), "pty received:hello replay") {
-		t.Fatalf("PTY output = %q, want helper response", output.String())
+	if !strings.Contains(output.String(), "pty helper ready") {
+		t.Fatalf("PTY output = %q, want helper marker", output.String())
 	}
 
 	raw := openRawDB(t, dbPath)
@@ -179,14 +178,10 @@ func TestReplayPTYHelperProcess(t *testing.T) {
 	if os.Getenv("RAPPID_REPLAY_PTY_HELPER") != "1" {
 		return
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(96)
-	}
-	fmt.Fprintf(os.Stdout, "pty received:%s", line)
-	// Keep the process alive briefly so a queued resize observation can be
-	// applied deterministically by the recorder's resize pump.
-	time.Sleep(100 * time.Millisecond)
+	fmt.Fprintln(os.Stdout, "pty helper ready")
+	// Keep the child attached long enough for queued input and resize operations
+	// to cross the platform PTY boundary without depending on canonical line
+	// discipline, which differs between Unix PTYs and Windows ConPTY.
+	time.Sleep(500 * time.Millisecond)
 	os.Exit(0)
 }
