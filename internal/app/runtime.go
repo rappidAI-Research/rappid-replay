@@ -101,17 +101,41 @@ func ValidateWorkspaceSeparation(workspace, dataRoot string) error {
 	return nil
 }
 
+// canonicalExistingOrAbsolute resolves symlinks in the complete path when it
+// exists. For a path that has not been created yet, it resolves the deepest
+// existing ancestor and then appends the unresolved suffix. This prevents a
+// symlinked parent from disguising an eventual Replay data directory as being
+// outside the recorded workspace.
 func canonicalExistingOrAbsolute(name string) (string, error) {
 	abs, err := filepath.Abs(name)
 	if err != nil {
 		return "", err
 	}
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		return filepath.Clean(resolved), nil
-	} else if !os.IsNotExist(err) {
-		return "", err
+	abs = filepath.Clean(abs)
+
+	current := abs
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for _, component := range suffix {
+				resolved = filepath.Join(resolved, component)
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			// Filesystem roots should exist, but retaining the lexical absolute
+			// path is safer than looping forever on an unusual virtual filesystem.
+			return abs, nil
+		}
+		suffix = append([]string{filepath.Base(current)}, suffix...)
+		current = parent
 	}
-	return filepath.Clean(abs), nil
 }
 
 // Runtime owns the durable local stores used by command handlers.
