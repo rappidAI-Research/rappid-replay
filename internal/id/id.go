@@ -109,6 +109,6 @@ func parseUUIDv7(s, prefix, domain string) (string, error) {
 	return prefix + u.String(), nil
 }
 
-func (s SessionID) String() string   { return string(s) }
-func (s StateID) String() string     { return string(s) }
-func (s ArtifactID) String() string  { return string(s) }
+func (s SessionID) String() string  { return string(s) }
+func (s StateID) String() string    { return string(s) }
+func (s ArtifactID) String() string { return string(s) }
