@@ -88,8 +88,8 @@ func TestDiscoverArtifactDeltaFindsCreatedModifiedAndReplacedFiles(t *testing.T)
 }
 
 func TestDiscoverArtifactDeltaPreservesRawPathBytes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows filenames are Unicode rather than arbitrary byte sequences")
+	if runtime.GOOS != "linux" {
+		t.Skip("arbitrary non-UTF-8 filename bytes are exercised on Linux")
 	}
 	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x7b}, 32))
 	if err != nil {
