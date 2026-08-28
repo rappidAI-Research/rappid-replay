@@ -3,6 +3,7 @@ module github.com/rappidAI-Research/rappid-replay
 go 1.27
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gofrs/flock v0.13.0
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.19.2

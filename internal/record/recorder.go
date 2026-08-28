@@ -52,11 +52,10 @@ type Result struct {
 	EndedAt        time.Time
 }
 
-// Run records one command using the Generic Recorder baseline. This first Track
-// B execution path captures the session/process lifecycle, stdout/stderr bytes,
-// and exact initial/final workspace states. PTY semantics, filesystem watcher
-// checkpoints, process-tree discovery, and richer environment capture are added
-// by subsequent recorder slices without changing these persistence contracts.
+// Run records one command using the Generic Recorder baseline. Filesystem
+// notifications are only triggers: every checkpoint is reconstructed by a full
+// canonical reconciliation scan before publication, and the final snapshot is
+// captured after the child exits regardless of watcher activity.
 func Run(ctx context.Context, deps Dependencies, options Options) (Result, error) {
 	if ctx == nil {
 		return Result{}, fmt.Errorf("context is required")
@@ -152,25 +151,44 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	if err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
 	}
-	wall, monotonic := clock.sample()
-	if _, err := deps.DB.PublishSnapshot(ctx, deps.CAS, persistence.PublishSnapshotRequest{
-		StateID:     initialStateID,
-		SessionID:   sessionID,
-		RootTreeID:  initialSnapshot.RootTreeID,
-		Role:        persistence.SnapshotInitial,
-		WallTimeUTC: wall,
-		MonotonicNS: monotonic,
-		Source:      recorderSource,
+	if _, err := sink.publishSnapshot(ctx, deps.CAS, persistence.PublishSnapshotRequest{
+		StateID:    initialStateID,
+		SessionID:  sessionID,
+		RootTreeID: initialSnapshot.RootTreeID,
+		Role:       persistence.SnapshotInitial,
+		Source:     recorderSource,
 	}); err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", fmt.Errorf("publish initial workspace state: %w", err))
 	}
 	result.InitialStateID = initialStateID
-	lastState := initialStateID
+	position := checkpointPosition{StateID: initialStateID, RootTreeID: initialSnapshot.RootTreeID}
+
+	var watcher workspaceChangeSource
+	if created, watcherErr := newWorkspaceWatcher(absWorkingDir, policy); watcherErr != nil {
+		if err := sink.append("fs.watcher.unavailable", struct {
+			Error string `json:"error"`
+		}{Error: watcherErr.Error()}); err != nil {
+			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+		}
+	} else {
+		watcher = created
+		defer func() { _ = watcher.Close() }()
+		// Close the narrow race between the initial snapshot and watcher setup.
+		// A no-op reconciliation publishes nothing when the root is unchanged.
+		position, err = reconcileWorkspace(
+			ctx, deps, sink, snapshotter, absWorkingDir, sessionID, position, "watcher-start",
+		)
+		if err != nil {
+			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+		}
+	}
 
 	// Execute the original argv. Only the durable metadata copy is redacted;
 	// secrets are not reconstructed from history and remain the caller's runtime
 	// responsibility.
-	command := exec.CommandContext(ctx, options.Command[0], options.Command[1:]...)
+	commandCtx, cancelCommand := context.WithCancel(ctx)
+	defer cancelCommand()
+	command := exec.CommandContext(commandCtx, options.Command[0], options.Command[1:]...)
 	command.Dir = absWorkingDir
 	command.Stdin = options.Stdin
 	if options.Env != nil {
@@ -185,7 +203,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 
 	if err := command.Start(); err != nil {
 		close(streamGate)
-		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, lastState, fmt.Errorf("start recorded command: %w", err))
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("start recorded command: %w", err))
 	}
 	pid := command.Process.Pid
 	startEventErr := sink.appendTechnical("process.started", struct {
@@ -195,6 +213,19 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		CWD     string   `json:"cwd"`
 	}{PID: pid, Path: command.Path, Command: recordedCommand, CWD: absWorkingDir}, commandRedacted)
 	close(streamGate)
+	if startEventErr != nil {
+		// Once the durable process boundary cannot be recorded, continuing the
+		// child would create effects Replay cannot place on its timeline.
+		cancelCommand()
+	}
+
+	var checkpoints *checkpointLoop
+	if watcher != nil && startEventErr == nil {
+		checkpoints = startCheckpointLoop(
+			commandCtx, deps, sink, snapshotter, absWorkingDir, sessionID, position,
+			watcher, cancelCommand,
+		)
+	}
 
 	waitErr := command.Wait()
 	// Wait does not return until os/exec's stdout/stderr copy goroutines have
@@ -203,14 +234,35 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	_ = stdoutRecorder.Flush()
 	_ = stderrRecorder.Flush()
 
+	var checkpointErr error
+	if checkpoints != nil {
+		checkpointResult := checkpoints.Stop()
+		position = checkpointResult.Position
+		checkpointErr = checkpointResult.Err
+	}
+	if watcher != nil {
+		if closeErr := watcher.Close(); closeErr != nil && checkpointErr == nil {
+			if err := sink.append("fs.watcher.error", struct {
+				Error string `json:"error"`
+			}{Error: fmt.Sprintf("close watcher: %v", closeErr)}); err != nil {
+				checkpointErr = err
+			}
+		}
+	}
+
 	exitCode := 0
 	processSuccess := waitErr == nil
 	if waitErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
+		} else if commandCtx.Err() != nil && (ctx.Err() != nil || startEventErr != nil || checkpointErr != nil) {
+			// exec.CommandContext may surface a context-driven termination without
+			// an ExitError on some platforms. Preserve a technical exit boundary;
+			// the session is aborted below with the actual recorder/context cause.
+			exitCode = -1
 		} else {
-			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, lastState, fmt.Errorf("wait for recorded command: %w", waitErr))
+			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("wait for recorded command: %w", waitErr))
 		}
 	}
 	result.ExitCode = exitCode
@@ -227,39 +279,37 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 
 	cleanupCtx := context.WithoutCancel(ctx)
+	if ctx.Err() != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("recorded command context ended: %w", ctx.Err()))
+	}
+	if startEventErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, startEventErr)
+	}
+	if checkpointErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, checkpointErr)
+	}
+
 	finalSnapshot, snapshotErr := captureWithRetry(cleanupCtx, snapshotter, absWorkingDir)
 	if snapshotErr == nil {
 		finalStateID, idErr := id.NewState()
 		if idErr != nil {
 			snapshotErr = idErr
+		} else if _, publishErr := sink.publishSnapshot(cleanupCtx, deps.CAS, persistence.PublishSnapshotRequest{
+			StateID:     finalStateID,
+			SessionID:   sessionID,
+			RootTreeID:  finalSnapshot.RootTreeID,
+			Role:        persistence.SnapshotFinal,
+			StateBefore: position.StateID,
+			Source:      recorderSource,
+		}); publishErr != nil {
+			snapshotErr = fmt.Errorf("publish final workspace state: %w", publishErr)
 		} else {
-			wall, monotonic = clock.sample()
-			if _, publishErr := deps.DB.PublishSnapshot(cleanupCtx, deps.CAS, persistence.PublishSnapshotRequest{
-				StateID:     finalStateID,
-				SessionID:   sessionID,
-				RootTreeID:  finalSnapshot.RootTreeID,
-				Role:        persistence.SnapshotFinal,
-				WallTimeUTC: wall,
-				MonotonicNS: monotonic,
-				StateBefore: lastState,
-				Source:      recorderSource,
-			}); publishErr != nil {
-				snapshotErr = fmt.Errorf("publish final workspace state: %w", publishErr)
-			} else {
-				lastState = finalStateID
-				result.FinalStateID = finalStateID
-			}
+			position = checkpointPosition{StateID: finalStateID, RootTreeID: finalSnapshot.RootTreeID}
+			result.FinalStateID = finalStateID
 		}
 	}
-
-	if ctx.Err() != nil {
-		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, lastState, fmt.Errorf("recorded command context ended: %w", ctx.Err()))
-	}
-	if startEventErr != nil {
-		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, lastState, startEventErr)
-	}
 	if snapshotErr != nil {
-		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, lastState, fmt.Errorf("capture final workspace state: %w", snapshotErr))
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("capture final workspace state: %w", snapshotErr))
 	}
 
 	ended, endMonotonic := clock.sample()
