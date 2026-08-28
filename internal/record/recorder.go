@@ -307,12 +307,16 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		}); publishErr != nil {
 			snapshotErr = fmt.Errorf("publish final workspace state: %w", publishErr)
 		} else {
+			previous := position
 			position = checkpointPosition{StateID: finalStateID, RootTreeID: finalSnapshot.RootTreeID}
 			result.FinalStateID = finalStateID
+			if artifactErr := persistArtifactDelta(cleanupCtx, deps, sink, sessionID, previous, position); artifactErr != nil {
+				snapshotErr = fmt.Errorf("publish final workspace artifacts: %w", artifactErr)
+			}
 		}
 	}
 	if snapshotErr != nil {
-		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("capture final workspace state: %w", snapshotErr))
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("finalize workspace state: %w", snapshotErr))
 	}
 
 	ended, endMonotonic := clock.sample()
