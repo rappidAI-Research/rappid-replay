@@ -18,14 +18,16 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/state"
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
 	"github.com/rappidAI-Research/rappid-replay/internal/terminal"
+	"github.com/rappidAI-Research/rappid-replay/pkg/adapter"
 )
 
 const snapshotAttempts = 3
 
 // Dependencies are the already-open durable stores used by one recorder.
 type Dependencies struct {
-	DB  *persistence.DB
-	CAS *store.LocalStore
+	DB       *persistence.DB
+	CAS      *store.LocalStore
+	Adapters *adapter.Registry
 }
 
 // Options describes a generic child command recording. PTY enables a real
@@ -51,6 +53,8 @@ type Result struct {
 	SessionID      id.SessionID
 	InitialStateID id.StateID
 	FinalStateID   id.StateID
+	AdapterID      string
+	AdapterVersion string
 	ExitCode       int
 	StartedAt      time.Time
 	EndedAt        time.Time
@@ -108,6 +112,10 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		return Result{}, fmt.Errorf("compile recorder ignore policy: %w", err)
 	}
 	recordedCommand, commandRedacted := privacy.RedactCommandArgs(options.Command)
+	adapterSelection, err := selectRunAdapter(ctx, deps, recordedCommand, absWorkingDir)
+	if err != nil {
+		return Result{}, err
+	}
 
 	sessionID, err := id.NewSession()
 	if err != nil {
@@ -115,33 +123,45 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 	started := time.Now()
 	clock := newRunClock(started)
-	result := Result{SessionID: sessionID, StartedAt: started.UTC()}
+	result := Result{
+		SessionID:      sessionID,
+		AdapterID:      adapterSelection.Descriptor.ID,
+		AdapterVersion: adapterSelection.Descriptor.Version,
+		StartedAt:      started.UTC(),
+	}
 	if err := deps.DB.CreateSession(ctx, persistence.SessionStart{
 		ID:                   sessionID,
 		Command:              recordedCommand,
 		CWD:                  absWorkingDir,
 		StartedAt:            started,
 		ReproducibilityLevel: "R0",
-		AdapterID:            "generic",
+		AdapterID:            adapterSelection.Descriptor.ID,
+		AdapterVersion:       adapterSelection.Descriptor.Version,
 	}); err != nil {
 		return result, err
 	}
 
 	sink := newEventSink(ctx, deps.DB, sessionID.String(), clock)
 	if err := sink.appendTechnical("session.started", struct {
-		Command       []string `json:"command"`
-		CWD           string   `json:"cwd"`
-		Recorder      string   `json:"recorder"`
-		PTY           bool     `json:"pty"`
-		TerminalInput string   `json:"terminal_input"`
-		StdinAttached bool     `json:"stdin_attached"`
+		Command            []string             `json:"command"`
+		CWD                string               `json:"cwd"`
+		Recorder           string               `json:"recorder"`
+		Adapter            adapter.Descriptor   `json:"adapter"`
+		AdapterDetection   adapter.Detection    `json:"adapter_detection"`
+		AdapterDiagnostics []adapter.Diagnostic `json:"adapter_diagnostics,omitempty"`
+		PTY                bool                 `json:"pty"`
+		TerminalInput      string               `json:"terminal_input"`
+		StdinAttached      bool                 `json:"stdin_attached"`
 	}{
-		Command:       recordedCommand,
-		CWD:           absWorkingDir,
-		Recorder:      "generic",
-		PTY:           options.PTY,
-		TerminalInput: options.TerminalInput,
-		StdinAttached: options.Stdin != nil,
+		Command:            recordedCommand,
+		CWD:                absWorkingDir,
+		Recorder:           "generic",
+		Adapter:            adapterSelection.Descriptor,
+		AdapterDetection:   adapterSelection.Detection,
+		AdapterDiagnostics: adapterSelection.Diagnostics,
+		PTY:                options.PTY,
+		TerminalInput:      options.TerminalInput,
+		StdinAttached:      options.Stdin != nil,
 	}, commandRedacted); err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
 	}
