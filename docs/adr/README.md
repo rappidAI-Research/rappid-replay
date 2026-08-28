@@ -22,5 +22,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-018 — OS-backed local CAS master key — **Accepted**
 - ADR-019 — Cross-platform path portability is validated before materialization — **Accepted**
 - ADR-020 — Watcher-triggered reconciliation for intermediate checkpoints — **Accepted**
+- ADR-021 — Privacy-filtered execution environment capture — **Accepted**
 
 ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
