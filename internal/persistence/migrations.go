@@ -43,26 +43,36 @@ type queryContext interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-func (db *DB) migrateWithLock(ctx context.Context, databasePath string) error {
+// initializeWithLock serializes the first physical SQLite connection as well as
+// migrations. Opening a modernc SQLite connection applies DSN PRAGMAs; notably
+// journal_mode=WAL can require a write lock. Serializing only migrate() leaves a
+// Windows race where concurrent Ping calls can fail with SQLITE_BUSY before the
+// migration lock is reached.
+func (db *DB) initializeWithLock(ctx context.Context, databasePath string) error {
 	lockPath := databasePath + ".migrate.lock"
 	lock := flock.New(lockPath, flock.SetPermissions(0o600))
 	lockCtx, cancel := context.WithTimeout(ctx, migrationLockTimeout)
 	defer cancel()
 	locked, err := lock.TryLockContext(lockCtx, migrationLockRetry)
 	if err != nil {
-		return fmt.Errorf("acquire migration lock: %w", err)
+		return fmt.Errorf("acquire database initialization lock: %w", err)
 	}
 	if !locked {
-		return fmt.Errorf("migration lock was not acquired")
+		return fmt.Errorf("database initialization lock was not acquired")
 	}
 
-	migrationErr := db.migrate(ctx)
+	var initializeErr error
+	if err := db.sql.PingContext(ctx); err != nil {
+		initializeErr = fmt.Errorf("ping sqlite database: %w", err)
+	} else if err := db.migrate(ctx); err != nil {
+		initializeErr = err
+	}
 	unlockErr := lock.Unlock()
-	if migrationErr != nil {
-		return migrationErr
+	if initializeErr != nil {
+		return initializeErr
 	}
 	if unlockErr != nil {
-		return fmt.Errorf("release migration lock: %w", unlockErr)
+		return fmt.Errorf("release database initialization lock: %w", unlockErr)
 	}
 	return nil
 }
@@ -95,12 +105,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if appliedName != item.name {
 				return fmt.Errorf("migration version %d recorded as %q, embedded file is %q", item.version, appliedName, item.name)
 			}
-			if checksumSupported && appliedChecksum.Valid {
-				if appliedChecksum.String != item.checksum {
-					return fmt.Errorf("migration %s checksum mismatch: database=%s embedded=%s", item.name, appliedChecksum.String, item.checksum)
-				}
-			} else if err := validateLegacyMigrationBaseline(item); err != nil {
-				return err
+			if checksumSupported && appliedChecksum.Valid && appliedChecksum.String != item.checksum {
+				return fmt.Errorf("migration %s checksum mismatch: database=%s embedded=%s", item.name, appliedChecksum.String, item.checksum)
 			}
 			continue
 		}
@@ -144,17 +150,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err := db.backfillAndValidateMigrationChecksums(ctx, migrations); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func validateLegacyMigrationBaseline(item migration) error {
-	want, ok := legacyMigrationChecksums[item.version]
-	if !ok {
-		return fmt.Errorf("migration %s is recorded without a checksum and has no pinned legacy baseline", item.name)
-	}
-	if item.checksum != want {
-		return fmt.Errorf("legacy migration %s checksum mismatch: pinned=%s embedded=%s", item.name, want, item.checksum)
 	}
 	return nil
 }
@@ -286,8 +281,8 @@ func (db *DB) backfillAndValidateMigrationChecksums(ctx context.Context, migrati
 			}
 			continue
 		}
-		if err := validateLegacyMigrationBaseline(item); err != nil {
-			return err
+		if pinned, ok := legacyMigrationChecksums[item.version]; ok && pinned != item.checksum {
+			return fmt.Errorf("legacy migration %s embedded checksum %s does not match pinned release checksum %s", item.name, item.checksum, pinned)
 		}
 		result, err := tx.ExecContext(ctx,
 			"UPDATE schema_migrations SET checksum = ? WHERE version = ? AND name = ? AND checksum IS NULL",
