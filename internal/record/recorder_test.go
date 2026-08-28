@@ -93,10 +93,12 @@ func TestGenericRecorderCapturesLifecycleStreamsAndState(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(eventTypes) < 8 {
+	if len(eventTypes) < 10 {
 		t.Fatalf("event types = %v, want complete lifecycle", eventTypes)
 	}
-	if eventTypes[0] != "session.started" || eventTypes[1] != "state.snapshot" || eventTypes[2] != "process.started" {
+	if eventTypes[0] != "session.started" || eventTypes[1] != "state.snapshot" ||
+		eventTypes[2] != "session.environment" || eventTypes[3] != "git.context" ||
+		eventTypes[4] != "process.started" {
 		t.Fatalf("initial event order = %v", eventTypes)
 	}
 	if eventTypes[len(eventTypes)-3] != "process.exited" || eventTypes[len(eventTypes)-2] != "state.snapshot" || eventTypes[len(eventTypes)-1] != "session.completed" {
