@@ -81,6 +81,7 @@ func normalizeEnvironmentName(name string) string {
 		if !lastSeparator && builder.Len() > 0 {
 			builder.WriteByte('_')
 			lastSeparator = true
+		}
 	}
 	return strings.Trim(builder.String(), "_")
 }
