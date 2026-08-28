@@ -19,7 +19,8 @@ import (
 )
 
 func TestPTYRecorderCapturesCombinedOutputInputAndResize(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	dbPath := filepath.Join(t.TempDir(), "replay.db")
 	db, err := persistence.Open(ctx, dbPath)
 	if err != nil {
@@ -120,7 +121,8 @@ func TestPTYRecorderCapturesCombinedOutputInputAndResize(t *testing.T) {
 }
 
 func TestPTYRecorderMetadataOnlyInputDoesNotPersistBytes(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	dbPath := filepath.Join(t.TempDir(), "replay.db")
 	db, err := persistence.Open(ctx, dbPath)
 	if err != nil {
