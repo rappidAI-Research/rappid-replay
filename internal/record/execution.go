@@ -73,14 +73,6 @@ type ptyExecution struct {
 	sink           *eventSink
 }
 
-func (e *ptyExecution) PID() int {
-	state := e.session.ProcessState()
-	_ = state
-	// ProcessState is nil while the child is running; the PID is captured in
-	// startRecordedExecution and stored separately by the wrapper below.
-	return 0
-}
-
 // ptyRunning adds the immutable PID to ptyExecution without exposing the
 // third-party command implementation to the recorder lifecycle.
 type ptyRunning struct {
@@ -202,11 +194,11 @@ func startPTYExecution(
 		}
 	}
 	if err := sink.append("terminal.opened", struct {
-		Mode          string `json:"mode"`
-		Output        string `json:"output"`
-		InputPolicy   string `json:"input_policy"`
-		Columns       int    `json:"columns,omitempty"`
-		Rows          int    `json:"rows,omitempty"`
+		Mode        string `json:"mode"`
+		Output      string `json:"output"`
+		InputPolicy string `json:"input_policy"`
+		Columns     int    `json:"columns,omitempty"`
+		Rows        int    `json:"rows,omitempty"`
 	}{
 		Mode: "pty", Output: "combined", InputPolicy: options.TerminalInput,
 		Columns: options.InitialTerminalSize.Columns, Rows: options.InitialTerminalSize.Rows,
