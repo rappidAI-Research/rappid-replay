@@ -23,7 +23,7 @@ func RedactCommandArgs(args []string) ([]string, bool) {
 	for index := 0; index < len(out); index++ {
 		arg := out[index]
 		name, value, hasValue := strings.Cut(arg, "=")
-		if isSensitiveArgumentName(name) {
+		if isSensitiveFlagName(name) {
 			if hasValue {
 				out[index] = name + "=[REDACTED]"
 				redacted = true
@@ -47,8 +47,12 @@ func RedactCommandArgs(args []string) ([]string, bool) {
 	return out, redacted
 }
 
-func isSensitiveArgumentName(value string) bool {
-	name := strings.ToLower(strings.TrimLeft(strings.TrimSpace(value), "-"))
+func isSensitiveFlagName(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "-") {
+		return false
+	}
+	name := strings.ToLower(strings.TrimLeft(value, "-"))
 	_, ok := sensitiveArgumentNames[name]
 	return ok
 }
