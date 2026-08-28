@@ -31,6 +31,9 @@ func TestAppendEventRejectsStandaloneArtifactDiscovery(t *testing.T) {
 		event.Privacy{Classification: "technical"},
 		json.RawMessage(`{"artifact_id":"placeholder"}`),
 	)
+	// Replace the escaped form above with canonical JSON bytes before validation.
+	draft.Payload = json.RawMessage(`{"artifact_id":"placeholder"}`)
+	draft.Payload = []byte(`{"artifact_id":"placeholder"}`)
 	if _, err := db.AppendEvent(context.Background(), draft, 1); err == nil || !strings.Contains(err.Error(), "PublishArtifact") {
 		t.Fatalf("AppendEvent() error = %v, want PublishArtifact requirement", err)
 	}
