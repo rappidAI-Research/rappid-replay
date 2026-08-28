@@ -25,6 +25,7 @@ const (
 	ArtifactReplaced ArtifactChangeKind = "replaced"
 
 	ArtifactDiscoveryWorkspaceDelta = "workspace-delta"
+	ArtifactEventType               = "fs.artifact.discovered"
 )
 
 // PublishArtifactRequest binds one discovered file object to the exact state
@@ -54,21 +55,21 @@ type PublishedArtifact struct {
 }
 
 type artifactEventPayload struct {
-	ArtifactID        string `json:"artifact_id"`
-	Discovery         string `json:"discovery"`
-	ChangeKind        string `json:"change_kind"`
-	PathB64           string `json:"path_b64"`
-	PathDisplay       string `json:"path_display"`
-	ObjectID          string `json:"object_id"`
-	PreviousObjectID  string `json:"previous_object_id,omitempty"`
-	Mode              uint32 `json:"mode"`
-	Size              int64  `json:"size"`
-	FromStateID       string `json:"from_state_id"`
-	StateID           string `json:"state_id"`
+	ArtifactID       string `json:"artifact_id"`
+	Discovery        string `json:"discovery"`
+	ChangeKind       string `json:"change_kind"`
+	PathB64          string `json:"path_b64"`
+	PathDisplay      string `json:"path_display"`
+	ObjectID         string `json:"object_id"`
+	PreviousObjectID string `json:"previous_object_id,omitempty"`
+	Mode             uint32 `json:"mode"`
+	Size             int64  `json:"size"`
+	FromStateID      string `json:"from_state_id"`
+	StateID          string `json:"state_id"`
 }
 
 // PublishArtifact atomically reserves an event sequence, writes the
-// artifact.discovered event, and publishes the matching provenance row. The
+// fs.artifact.discovered event, and publishes the matching provenance row. The
 // referenced file object must already be reachable from StateID, so an artifact
 // can never point at unauthenticated or unrelated CAS content.
 func (db *DB) PublishArtifact(ctx context.Context, req PublishArtifactRequest) (PublishedArtifact, error) {
@@ -99,7 +100,7 @@ func (db *DB) PublishArtifact(ctx context.Context, req PublishArtifactRequest) (
 	}
 	draft := event.NewDraft(
 		req.SessionID.String(),
-		"artifact.discovered",
+		ArtifactEventType,
 		req.Source,
 		req.WallTimeUTC,
 		event.Privacy{Classification: "technical"},
@@ -223,9 +224,6 @@ func validateArtifactRequest(req PublishArtifactRequest) error {
 	}
 	if req.Size < 0 {
 		return fmt.Errorf("artifact size must be non-negative")
-	}
-	if req.Discovery == "" {
-		req.Discovery = ArtifactDiscoveryWorkspaceDelta
 	}
 	if req.Discovery != ArtifactDiscoveryWorkspaceDelta {
 		return fmt.Errorf("unsupported artifact discovery %q", req.Discovery)
