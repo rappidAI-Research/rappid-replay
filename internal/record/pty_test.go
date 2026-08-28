@@ -90,7 +90,7 @@ func TestPTYRecorderCapturesCombinedOutputInputAndResize(t *testing.T) {
 
 	var payloadJSON, privacyJSON []byte
 	if err := raw.QueryRowContext(ctx,
-		"SELECT payload, privacy FROM events WHERE session_id = ? AND type = 'terminal.stdin' ORDER BY seq LIMIT 1",
+		"SELECT payload_json, privacy_json FROM events WHERE session_id = ? AND type = 'terminal.stdin' ORDER BY seq LIMIT 1",
 		result.SessionID.String(),
 	).Scan(&payloadJSON, &privacyJSON); err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestPTYRecorderMetadataOnlyInputDoesNotPersistBytes(t *testing.T) {
 	defer raw.Close()
 	var payload []byte
 	if err := raw.QueryRowContext(ctx,
-		"SELECT payload FROM events WHERE session_id = ? AND type = 'terminal.stdin' ORDER BY seq LIMIT 1",
+		"SELECT payload_json FROM events WHERE session_id = ? AND type = 'terminal.stdin' ORDER BY seq LIMIT 1",
 		result.SessionID.String(),
 	).Scan(&payload); err != nil {
 		t.Fatal(err)
