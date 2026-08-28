@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rappidai-research.com/schemas/replay/fs-artifact-discovered.schema.json",
+  "title": "rappidAI Replay fs.artifact.discovered payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_id",
+    "discovery",
+    "change_kind",
+    "path_b64",
+    "path_display",
+    "object_id",
+    "mode",
+    "size",
+    "from_state_id",
+    "state_id"
+  ],
+  "properties": {
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "discovery": {
+      "const": "workspace-delta"
+    },
+    "change_kind": {
+      "enum": ["created", "modified", "replaced"]
+    },
+    "path_b64": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "path_display": {
+      "type": "string"
+    },
+    "object_id": {
+      "type": "string",
+      "pattern": "^b3:[0-9a-f]{64}$"
+    },
+    "previous_object_id": {
+      "type": "string",
+      "pattern": "^b3:[0-9a-f]{64}$"
+    },
+    "mode": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "from_state_id": {
+      "type": "string",
+      "pattern": "^st_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "state_id": {
+      "type": "string",
+      "pattern": "^st_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}
