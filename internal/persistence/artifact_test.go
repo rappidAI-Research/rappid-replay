@@ -80,7 +80,7 @@ func TestPublishArtifactPersistsEventAndProvenanceAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishArtifact() error = %v", err)
 	}
-	if published.Event.Seq != 3 || published.Event.Type != "artifact.discovered" {
+	if published.Event.Seq != 3 || published.Event.Type != ArtifactEventType {
 		t.Fatalf("artifact event = %+v", published.Event)
 	}
 	if published.Event.StateBefore != initialStateID.String() || published.Event.StateAfter != nextStateID.String() {
