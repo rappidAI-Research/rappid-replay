@@ -14,6 +14,7 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/id"
 	"github.com/rappidAI-Research/rappid-replay/internal/ignore"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
+	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/internal/state"
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
 )
@@ -103,6 +104,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	if err != nil {
 		return Result{}, fmt.Errorf("compile recorder ignore policy: %w", err)
 	}
+	recordedCommand, commandRedacted := privacy.RedactCommandArgs(options.Command)
 
 	sessionID, err := id.NewSession()
 	if err != nil {
@@ -113,7 +115,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	result := Result{SessionID: sessionID, StartedAt: started.UTC()}
 	if err := deps.DB.CreateSession(ctx, persistence.SessionStart{
 		ID:                   sessionID,
-		Command:              append([]string(nil), options.Command...),
+		Command:              recordedCommand,
 		CWD:                  absWorkingDir,
 		StartedAt:            started,
 		ReproducibilityLevel: "R0",
@@ -123,7 +125,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 
 	sink := newEventSink(ctx, deps.DB, sessionID.String(), clock)
-	if err := sink.append("session.started", struct {
+	if err := sink.appendTechnical("session.started", struct {
 		Command       []string `json:"command"`
 		CWD           string   `json:"cwd"`
 		Recorder      string   `json:"recorder"`
@@ -131,13 +133,13 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		TerminalInput string   `json:"terminal_input"`
 		StdinAttached bool     `json:"stdin_attached"`
 	}{
-		Command:       append([]string(nil), options.Command...),
+		Command:       recordedCommand,
 		CWD:           absWorkingDir,
 		Recorder:      "generic",
 		PTY:           false,
 		TerminalInput: options.TerminalInput,
 		StdinAttached: options.Stdin != nil,
-	}); err != nil {
+	}, commandRedacted); err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
 	}
 
@@ -165,6 +167,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	result.InitialStateID = initialStateID
 	lastState := initialStateID
 
+	// Execute the original argv. Only the durable metadata copy is redacted;
+	// secrets are not reconstructed from history and remain the caller's runtime
+	// responsibility.
 	command := exec.CommandContext(ctx, options.Command[0], options.Command[1:]...)
 	command.Dir = absWorkingDir
 	command.Stdin = options.Stdin
@@ -183,12 +188,12 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, lastState, fmt.Errorf("start recorded command: %w", err))
 	}
 	pid := command.Process.Pid
-	startEventErr := sink.append("process.started", struct {
+	startEventErr := sink.appendTechnical("process.started", struct {
 		PID     int      `json:"pid"`
 		Path    string   `json:"path"`
 		Command []string `json:"command"`
 		CWD     string   `json:"cwd"`
-	}{PID: pid, Path: command.Path, Command: append([]string(nil), options.Command...), CWD: absWorkingDir})
+	}{PID: pid, Path: command.Path, Command: recordedCommand, CWD: absWorkingDir}, commandRedacted)
 	close(streamGate)
 
 	waitErr := command.Wait()
