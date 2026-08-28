@@ -12,6 +12,7 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/event"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
 	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
+	"github.com/rappidAI-Research/rappid-replay/internal/state"
 )
 
 const (
@@ -68,6 +69,31 @@ func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMeta
 		return s.firstErr
 	}
 	return nil
+}
+
+// publishSnapshot serializes state.snapshot publication with every other event
+// emitted through this sink. The monotonic clock sample is taken only after the
+// shared lock is held, so concurrent terminal output and reconciliation cannot
+// commit a newer event before a snapshot carrying an older monotonic timestamp.
+func (s *eventSink) publishSnapshot(
+	ctx context.Context,
+	cas state.InspectableObjectStore,
+	req persistence.PublishSnapshotRequest,
+) (persistence.PublishedSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.firstErr != nil {
+		return persistence.PublishedSnapshot{}, s.firstErr
+	}
+	wall, monotonic := s.clock.sample()
+	req.WallTimeUTC = wall
+	req.MonotonicNS = monotonic
+	published, err := s.db.PublishSnapshot(ctx, cas, req)
+	if err != nil {
+		s.firstErr = fmt.Errorf("publish %s snapshot: %w", req.Role, err)
+		return persistence.PublishedSnapshot{}, s.firstErr
+	}
+	return published, nil
 }
 
 func (s *eventSink) err() error {
