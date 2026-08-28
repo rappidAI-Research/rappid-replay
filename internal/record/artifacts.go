@@ -12,12 +12,12 @@ import (
 )
 
 type artifactCandidate struct {
-	Path []byte
-	ChangeKind persistence.ArtifactChangeKind
-	ObjectID store.ObjectID
+	Path             []byte
+	ChangeKind       persistence.ArtifactChangeKind
+	ObjectID         store.ObjectID
 	PreviousObjectID store.ObjectID
-	Mode uint32
-	Size int64
+	Mode             uint32
+	Size             int64
 }
 
 func discoverArtifactDelta(cas *store.LocalStore, fromRoot, toRoot store.ObjectID) ([]artifactCandidate, error) {
@@ -117,17 +117,17 @@ func persistArtifactDelta(ctx context.Context, deps Dependencies, sink *eventSin
 	}
 	for _, artifact := range artifacts {
 		if _, err := sink.publishArtifact(ctx, persistence.PublishArtifactRequest{
-			SessionID: sessionID,
-			FromStateID: from.StateID,
-			StateID: to.StateID,
-			Path: artifact.Path,
-			ChangeKind: artifact.ChangeKind,
-			ObjectID: artifact.ObjectID,
+			SessionID:        sessionID,
+			FromStateID:      from.StateID,
+			StateID:          to.StateID,
+			Path:             artifact.Path,
+			ChangeKind:       artifact.ChangeKind,
+			ObjectID:         artifact.ObjectID,
 			PreviousObjectID: artifact.PreviousObjectID,
-			Mode: artifact.Mode,
-			Size: artifact.Size,
-			Discovery: persistence.ArtifactDiscoveryWorkspaceDelta,
-			Source: recorderSource,
+			Mode:             artifact.Mode,
+			Size:             artifact.Size,
+			Discovery:        persistence.ArtifactDiscoveryWorkspaceDelta,
+			Source:           recorderSource,
 		}); err != nil {
 			return err
 		}
