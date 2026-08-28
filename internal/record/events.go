@@ -1,6 +1,7 @@
 package record
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,9 +11,15 @@ import (
 
 	"github.com/rappidAI-Research/rappid-replay/internal/event"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
+	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 )
 
-const recorderSource = "recorder.generic"
+const (
+	recorderSource             = "recorder.generic"
+	maxTerminalBufferedSegment = 64 << 10
+)
+
+var oversizedTerminalMarker = []byte("[REDACTED: terminal segment exceeded privacy buffer]")
 
 type eventSink struct {
 	ctx       context.Context
@@ -29,6 +36,10 @@ func newEventSink(ctx context.Context, db *persistence.DB, sessionID string, clo
 }
 
 func (s *eventSink) append(eventType string, payload any) error {
+	return s.appendWithPrivacy(eventType, payload, event.Privacy{Classification: "technical"})
+}
+
+func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMetadata event.Privacy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.firstErr != nil {
@@ -45,7 +56,7 @@ func (s *eventSink) append(eventType string, payload any) error {
 		eventType,
 		recorderSource,
 		wall,
-		event.Privacy{Classification: "technical"},
+		privacyMetadata,
 		encoded,
 	)
 	if _, err := s.db.AppendEvent(s.ctx, draft, monotonic); err != nil {
@@ -65,36 +76,99 @@ type streamEventWriter struct {
 	sink   *eventSink
 	stream string
 	output io.Writer
+
+	mu      sync.Mutex
+	pending []byte
 }
 
-func (w streamEventWriter) Write(p []byte) (int, error) {
+func (w *streamEventWriter) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
 	n := len(p)
+	var outputErr error
 	if w.output != nil {
-		var err error
-		n, err = w.output.Write(p)
-		if err != nil {
-			return n, err
-		}
-		if n != len(p) {
-			return n, io.ErrShortWrite
+		n, outputErr = w.output.Write(p)
+		if n < 0 || n > len(p) {
+			return 0, fmt.Errorf("terminal %s output writer returned invalid byte count %d", w.stream, n)
 		}
 	}
-
-	// Stream persistence failures are remembered by the sink but deliberately do
-	// not break the child's stdout/stderr pipe. The recorder can then wait for the
-	// process, preserve as much evidence as possible, and terminate the session as
-	// aborted instead of perturbing the recorded process with an artificial EPIPE.
-	_ = w.sink.append("terminal."+w.stream, struct {
-		Encoding string `json:"encoding"`
-		DataB64  string `json:"data_b64"`
-		Bytes    int    `json:"bytes"`
-	}{
-		Encoding: "base64",
-		DataB64:  base64.StdEncoding.EncodeToString(p[:n]),
-		Bytes:    n,
-	})
+	if n > 0 {
+		w.capture(p[:n])
+	}
+	if outputErr != nil {
+		return n, outputErr
+	}
+	if n != len(p) {
+		return n, io.ErrShortWrite
+	}
 	return n, nil
+}
+
+func (w *streamEventWriter) capture(p []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.pending = append(w.pending, p...)
+	for len(w.pending) > 0 {
+		if newline := bytes.IndexByte(w.pending, '\n'); newline >= 0 {
+			segment := bytes.Clone(w.pending[:newline+1])
+			w.pending = append(w.pending[:0], w.pending[newline+1:]...)
+			_ = w.emitSegment(segment)
+			continue
+		}
+		if len(w.pending) > maxTerminalBufferedSegment {
+			originalBytes := len(w.pending)
+			w.pending = w.pending[:0]
+			_ = w.emitPersisted(oversizedTerminalMarker, originalBytes, true, "unterminated-segment-limit")
+		}
+		break
+	}
+}
+
+// Flush persists a final unterminated stream segment after the child process
+// and os/exec's copy goroutines have completed.
+func (w *streamEventWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.pending) == 0 {
+		return w.sink.err()
+	}
+	segment := bytes.Clone(w.pending)
+	w.pending = w.pending[:0]
+	_ = w.emitSegment(segment)
+	return w.sink.err()
+}
+
+func (w *streamEventWriter) emitSegment(segment []byte) error {
+	persisted, redacted := privacy.RedactKnownSecrets(segment)
+	reason := ""
+	if redacted {
+		reason = "known-secret-pattern"
+	}
+	return w.emitPersisted(persisted, len(segment), redacted, reason)
+}
+
+func (w *streamEventWriter) emitPersisted(persisted []byte, originalBytes int, redacted bool, reason string) error {
+	payload := struct {
+		Encoding    string `json:"encoding"`
+		DataB64     string `json:"data_b64"`
+		Bytes       int    `json:"bytes"`
+		StoredBytes int    `json:"stored_bytes"`
+		Redaction   string `json:"redaction,omitempty"`
+	}{
+		Encoding:    "base64",
+		DataB64:     base64.StdEncoding.EncodeToString(persisted),
+		Bytes:       originalBytes,
+		StoredBytes: len(persisted),
+		Redaction:   reason,
+	}
+	// Terminal content is separate from technical metadata. Known credentials
+	// are redacted before the JSON payload reaches SQLite, and the privacy flag
+	// makes the loss of byte fidelity explicit to playback/export consumers.
+	return w.sink.appendWithPrivacy(
+		"terminal."+w.stream,
+		payload,
+		event.Privacy{Classification: "content", Redacted: redacted},
+	)
 }
