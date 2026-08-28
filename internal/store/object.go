@@ -65,11 +65,13 @@ func EncodeObject(kind ObjectKind, payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if uint64(len(payload)) > ^uint64(0) {
-		return nil, fmt.Errorf("object payload is too large")
-	}
 
 	headerLen := len(objectFrameMagic) + 1 + objectFrameLengthSize
+	maxPayload := maxDecodedObjectBytes - headerLen
+	if len(payload) > maxPayload {
+		return nil, fmt.Errorf("object payload is %d bytes, maximum is %d", len(payload), maxPayload)
+	}
+
 	framed := make([]byte, headerLen+len(payload))
 	copy(framed, objectFrameMagic)
 	framed[len(objectFrameMagic)] = code
@@ -84,6 +86,9 @@ func DecodeObject(framed []byte) (Object, error) {
 	headerLen := len(objectFrameMagic) + 1 + objectFrameLengthSize
 	if len(framed) < headerLen {
 		return Object{}, fmt.Errorf("object frame is truncated")
+	}
+	if len(framed) > maxDecodedObjectBytes {
+		return Object{}, fmt.Errorf("object frame exceeds %d-byte limit", maxDecodedObjectBytes)
 	}
 	if !bytes.Equal(framed[:len(objectFrameMagic)], objectFrameMagic) {
 		return Object{}, fmt.Errorf("object frame magic/version mismatch")

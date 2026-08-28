@@ -1,9 +1,6 @@
 package store
 
-import (
-	"fmt"
-	"os"
-)
+import "fmt"
 
 // ObjectMetadata is the verified metadata needed by Replay's durable object
 // catalog. PlaintextSize is the size of canonical typed plaintext (the exact
@@ -16,7 +13,9 @@ type ObjectMetadata struct {
 }
 
 // InspectObject authenticates and decodes an object before reporting metadata.
-// Metadata is therefore never derived from an unverified encrypted file alone.
+// StoredSize is obtained from a second bounded, identity-stable read rather than
+// a path-only Stat, so a local replacement race cannot silently change catalog
+// metadata after the object itself was verified.
 func (s *LocalStore) InspectObject(id ObjectID) (ObjectMetadata, error) {
 	framed, err := s.Get(id)
 	if err != nil {
@@ -30,17 +29,14 @@ func (s *LocalStore) InspectObject(id ObjectID) (ObjectMetadata, error) {
 	if err != nil {
 		return ObjectMetadata{}, err
 	}
-	info, err := os.Stat(objectPath)
+	storedPayload, err := readStableStoredFile(objectPath, maxStoredObjectBytes)
 	if err != nil {
-		return ObjectMetadata{}, fmt.Errorf("stat object %s: %w", id, err)
-	}
-	if !info.Mode().IsRegular() {
-		return ObjectMetadata{}, fmt.Errorf("object %s is not a regular file", id)
+		return ObjectMetadata{}, fmt.Errorf("inspect stored object %s: %w", id, err)
 	}
 	return ObjectMetadata{
 		ID:            id,
 		Kind:          obj.Kind,
 		PlaintextSize: int64(len(framed)),
-		StoredSize:    info.Size(),
+		StoredSize:    int64(len(storedPayload)),
 	}, nil
 }

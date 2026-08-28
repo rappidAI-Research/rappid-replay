@@ -19,7 +19,9 @@ type DB struct {
 }
 
 // Open opens or creates a Replay metadata database and applies all embedded
-// schema migrations before returning it to the caller.
+// schema migrations before returning it to the caller. The metadata database is
+// not the encrypted CAS, so Replay enforces private filesystem permissions at
+// this boundary rather than relying on the caller's umask.
 func Open(ctx context.Context, path string) (*DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("database path is required")
@@ -28,8 +30,27 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o700); err != nil {
+	dir := filepath.Dir(abs)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("set database directory permissions: %w", err)
+	}
+
+	// Create the database ourselves with a restrictive mode before SQLite gets
+	// a chance to create it using process umask defaults. Chmod also hardens a
+	// pre-existing Replay database that was created by an older version.
+	file, err := os.OpenFile(abs, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("prepare sqlite database file: %w", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("set sqlite database permissions: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return nil, fmt.Errorf("close prepared sqlite database file: %w", err)
 	}
 
 	sqlDB, err := sql.Open("sqlite", sqliteDSN(abs))
@@ -48,7 +69,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	}
 
 	db := &DB{sql: sqlDB}
-	if err := db.migrate(ctx); err != nil {
+	if err := db.migrateWithLock(ctx, abs); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}

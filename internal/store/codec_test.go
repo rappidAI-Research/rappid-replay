@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"sync"
 	"testing"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -81,6 +83,43 @@ func TestCodecRejectsTamperingAndWrongIdentity(t *testing.T) {
 	wrongID := SumObject([]byte("different object"))
 	if _, err := codec.Open(wrongID, payload); err == nil {
 		t.Fatal("Open() accepted payload under the wrong object ID")
+	}
+}
+
+func TestCodecConcurrentSealAndOpen(t *testing.T) {
+	codec := testCodec(t)
+
+	const workers = 16
+	const iterations = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for iteration := 0; iteration < iterations; iteration++ {
+				plaintext := []byte(fmt.Sprintf("worker=%d iteration=%d payload payload payload", worker, iteration))
+				id, payload, err := codec.Seal(plaintext)
+				if err != nil {
+					errs <- fmt.Errorf("Seal: %w", err)
+					return
+				}
+				got, err := codec.Open(id, payload)
+				if err != nil {
+					errs <- fmt.Errorf("Open: %w", err)
+					return
+				}
+				if !bytes.Equal(got, plaintext) {
+					errs <- fmt.Errorf("roundtrip mismatch")
+					return
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
 	}
 }
 

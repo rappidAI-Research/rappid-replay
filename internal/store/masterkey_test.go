@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -86,6 +87,9 @@ func TestMasterKeyManagerCreatesAndReusesKey(t *testing.T) {
 	if credentials.sets != 1 {
 		t.Fatalf("credential Set calls = %d, want 1", credentials.sets)
 	}
+	if _, err := os.Stat(manager.markerPath); err != nil {
+		t.Fatalf("initialization marker was not created: %v", err)
+	}
 }
 
 func TestMasterKeyManagerRejectsMalformedStoredKey(t *testing.T) {
@@ -117,6 +121,32 @@ func TestMasterKeyManagerFailsClosedOnCredentialBackendError(t *testing.T) {
 	}
 	if credentials.sets != 0 {
 		t.Fatalf("credential Set calls = %d, want 0", credentials.sets)
+	}
+}
+
+func TestMasterKeyManagerRefusesRegenerationAfterCredentialDeletion(t *testing.T) {
+	credentials := newMemoryCredentialStore()
+	manager, err := NewMasterKeyManager(credentials, filepath.Join(t.TempDir(), "master-key.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.random = bytes.NewReader(bytes.Repeat([]byte{0x17}, masterKeyBytes))
+
+	key, err := manager.LoadOrCreate(context.Background())
+	if err != nil {
+		t.Fatalf("initial LoadOrCreate() error = %v", err)
+	}
+	zeroBytes(key)
+	if err := credentials.Delete(masterKeyService, masterKeyAccount); err != nil {
+		t.Fatalf("delete credential: %v", err)
+	}
+
+	_, err = manager.LoadOrCreate(context.Background())
+	if !errors.Is(err, ErrMasterKeyMissing) {
+		t.Fatalf("LoadOrCreate() after credential deletion error = %v, want ErrMasterKeyMissing", err)
+	}
+	if credentials.sets != 1 {
+		t.Fatalf("credential Set calls = %d, want no regeneration after initial set", credentials.sets)
 	}
 }
 
