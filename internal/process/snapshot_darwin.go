@@ -24,13 +24,11 @@ func snapshotPlatform() ([]Entry, error) {
 	return entries, nil
 }
 
-func darwinProcessName(raw []int8) string {
-	name := make([]byte, 0, len(raw))
-	for _, value := range raw {
+func darwinProcessName(raw []byte) string {
+	for index, value := range raw {
 		if value == 0 {
-			break
+			return string(raw[:index])
 		}
-		name = append(name, byte(value))
 	}
-	return string(name)
+	return string(raw)
 }
