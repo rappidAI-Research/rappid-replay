@@ -63,13 +63,12 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	sqlDB.SetMaxOpenConns(4)
 	sqlDB.SetMaxIdleConns(4)
 
-	if err := sqlDB.PingContext(ctx); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("ping sqlite database: %w", err)
-	}
-
 	db := &DB{sql: sqlDB}
-	if err := db.migrateWithLock(ctx, abs); err != nil {
+	// Connection establishment itself can execute DSN PRAGMAs such as
+	// journal_mode=WAL. On Windows two first-openers can otherwise contend before
+	// the migration lock is reached and one Ping returns SQLITE_BUSY. Keep the
+	// initial Ping and migrations under the same cross-process lock.
+	if err := db.initializeWithLock(ctx, abs); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
