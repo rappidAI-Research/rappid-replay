@@ -36,7 +36,11 @@ func newEventSink(ctx context.Context, db *persistence.DB, sessionID string, clo
 }
 
 func (s *eventSink) append(eventType string, payload any) error {
-	return s.appendWithPrivacy(eventType, payload, event.Privacy{Classification: "technical"})
+	return s.appendTechnical(eventType, payload, false)
+}
+
+func (s *eventSink) appendTechnical(eventType string, payload any, redacted bool) error {
+	return s.appendWithPrivacy(eventType, payload, event.Privacy{Classification: "technical", Redacted: redacted})
 }
 
 func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMetadata event.Privacy) error {
