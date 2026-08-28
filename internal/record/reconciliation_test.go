@@ -34,8 +34,8 @@ func TestGenericRecorderPublishesWatcherTriggeredCheckpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Run(ctx, Dependencies{DB: db, CAS: cas}, Options{
-		Command:    []string{os.Args[0], "-test.run=^TestReplayReconciliationHelperProcess$", "--", workspace},
-		WorkingDir: workspace,
+		Command:       []string{os.Args[0], "-test.run=^TestReplayReconciliationHelperProcess$", "--", workspace},
+		WorkingDir:    workspace,
 		Env: append(os.Environ(),
 			"RAPPID_REPLAY_RECONCILE_HELPER=1",
 		),
