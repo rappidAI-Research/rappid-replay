@@ -33,13 +33,12 @@ func TestGenericRecorderPublishesWatcherTriggeredCheckpoint(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "before.txt"), []byte("before"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	helperEnv := append(os.Environ(), "RAPPID_REPLAY_RECONCILE_HELPER=1")
 	result, err := Run(ctx, Dependencies{DB: db, CAS: cas}, Options{
 		Command:       []string{os.Args[0], "-test.run=^TestReplayReconciliationHelperProcess$", "--", workspace},
 		WorkingDir:    workspace,
-		Env: append(os.Environ(),
-			"RAPPID_REPLAY_RECONCILE_HELPER=1",
-		),
 		TerminalInput: "off",
+		Env:           helperEnv,
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
