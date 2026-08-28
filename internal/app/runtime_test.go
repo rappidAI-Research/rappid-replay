@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -11,6 +12,25 @@ func TestValidateWorkspaceSeparationRejectsNestedDataDirectory(t *testing.T) {
 	dataRoot := filepath.Join(workspace, ".replay-data")
 	if err := ValidateWorkspaceSeparation(workspace, dataRoot); err == nil {
 		t.Fatal("ValidateWorkspaceSeparation() accepted data root inside workspace")
+	}
+}
+
+func TestValidateWorkspaceSeparationRejectsNonexistentDataRootThroughSymlinkAncestor(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges on Windows")
+	}
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(parent, "workspace-alias")
+	if err := os.Symlink(workspace, alias); err != nil {
+		t.Fatal(err)
+	}
+	dataRoot := filepath.Join(alias, "not-created-yet", "replay-data")
+	if err := ValidateWorkspaceSeparation(workspace, dataRoot); err == nil {
+		t.Fatal("ValidateWorkspaceSeparation() accepted nonexistent data root through symlink ancestor")
 	}
 }
 
