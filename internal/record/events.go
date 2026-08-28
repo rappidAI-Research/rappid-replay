@@ -96,6 +96,29 @@ func (s *eventSink) publishSnapshot(
 	return published, nil
 }
 
+// publishArtifact serializes artifact.discovered publication with terminal,
+// process, filesystem, and snapshot events. The SQLite artifact row and its
+// event are committed atomically by persistence.PublishArtifact.
+func (s *eventSink) publishArtifact(
+	ctx context.Context,
+	req persistence.PublishArtifactRequest,
+) (persistence.PublishedArtifact, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.firstErr != nil {
+		return persistence.PublishedArtifact{}, s.firstErr
+	}
+	wall, monotonic := s.clock.sample()
+	req.WallTimeUTC = wall
+	req.MonotonicNS = monotonic
+	published, err := s.db.PublishArtifact(ctx, req)
+	if err != nil {
+		s.firstErr = fmt.Errorf("publish artifact discovery: %w", err)
+		return persistence.PublishedArtifact{}, s.firstErr
+	}
+	return published, nil
+}
+
 func (s *eventSink) err() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
