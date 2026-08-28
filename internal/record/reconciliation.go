@@ -147,6 +147,7 @@ func runCheckpointLoop(
 				ctx, deps, sink, snapshotter, root, sessionID, position, "watcher",
 			)
 			if err != nil {
+				position = next
 				if ctx.Err() != nil {
 					return checkpointLoopResult{Position: position}
 				}
@@ -201,5 +202,9 @@ func reconcileWorkspace(
 	}); err != nil {
 		return position, fmt.Errorf("publish reconciled workspace checkpoint: %w", err)
 	}
-	return checkpointPosition{StateID: stateID, RootTreeID: snapshot.RootTreeID}, nil
+	next := checkpointPosition{StateID: stateID, RootTreeID: snapshot.RootTreeID}
+	if err := persistArtifactDelta(ctx, deps, sink, sessionID, position, next); err != nil {
+		return next, fmt.Errorf("publish reconciled workspace artifacts: %w", err)
+	}
+	return next, nil
 }
