@@ -42,12 +42,31 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 2
 	}
 
-	resolution, err := config.Load(config.LoadOptions{WorkingDir: *workingDir})
+	workspace := *workingDir
+	if workspace == "" {
+		var err error
+		workspace, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintf(stderr, "rappid: resolve working directory: %v\n", err)
+			return 1
+		}
+	}
+	layout, err := app.ResolveLayout(*dataDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "rappid: resolve local runtime: %v\n", err)
+		return 1
+	}
+	if err := app.ValidateWorkspaceSeparation(workspace, layout.Root); err != nil {
+		fmt.Fprintf(stderr, "rappid: unsafe storage layout: %v\n", err)
+		return 1
+	}
+
+	resolution, err := config.Load(config.LoadOptions{WorkingDir: workspace})
 	if err != nil {
 		fmt.Fprintf(stderr, "rappid: load configuration: %v\n", err)
 		return 1
 	}
-	runtime, err := app.OpenRuntime(ctx, *dataDir)
+	runtime, err := app.OpenRuntime(ctx, layout.Root)
 	if err != nil {
 		fmt.Fprintf(stderr, "rappid: open local runtime: %v\n", err)
 		return 1
@@ -69,7 +88,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	result, err := record.Run(ctx, record.Dependencies{DB: runtime.DB, CAS: runtime.CAS}, record.Options{
 		Command:       command,
-		WorkingDir:    *workingDir,
+		WorkingDir:    workspace,
 		Ignore:        resolution.Config.Record.Ignore,
 		TerminalInput: resolution.Config.Record.TerminalInput,
 		Stdin:         stdin,
