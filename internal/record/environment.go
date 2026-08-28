@@ -34,13 +34,13 @@ type environmentVariable struct {
 }
 
 type environmentSummary struct {
-	Schema         string `json:"schema"`
-	Variables      int    `json:"variables"`
-	Redacted       int    `json:"redacted"`
-	Malformed      int    `json:"malformed"`
-	GitAvailable   bool   `json:"git_available"`
-	GitRepository  bool   `json:"git_repository"`
-	GitDirtyKnown  bool   `json:"git_dirty_known"`
+	Schema        string `json:"schema"`
+	Variables     int    `json:"variables"`
+	Redacted      int    `json:"redacted"`
+	Malformed     int    `json:"malformed"`
+	GitAvailable  bool   `json:"git_available"`
+	GitRepository bool   `json:"git_repository"`
+	GitDirtyKnown bool   `json:"git_dirty_known"`
 }
 
 type gitContext struct {
