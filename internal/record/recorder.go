@@ -163,6 +163,20 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	result.InitialStateID = initialStateID
 	position := checkpointPosition{StateID: initialStateID, RootTreeID: initialSnapshot.RootTreeID}
 
+	fingerprint, environment, git, err := captureExecutionEnvironment(ctx, absWorkingDir, options.Env)
+	if err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+	}
+	if err := deps.DB.StoreEnvironment(ctx, sessionID, fingerprint); err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("persist execution environment: %w", err))
+	}
+	if err := sink.append("session.environment", environment); err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+	}
+	if err := sink.append("git.context", git); err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+	}
+
 	var watcher workspaceChangeSource
 	if created, watcherErr := newWorkspaceWatcher(absWorkingDir, policy); watcherErr != nil {
 		if err := sink.append("fs.watcher.unavailable", struct {
