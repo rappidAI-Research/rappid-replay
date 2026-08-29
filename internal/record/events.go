@@ -27,12 +27,26 @@ type eventSink struct {
 	sessionID string
 	clock     *runClock
 
-	mu       sync.Mutex
-	firstErr error
+	mu        sync.Mutex
+	firstErr  error
+	redaction adapterRedactionPolicy
 }
 
 func newEventSink(ctx context.Context, db *persistence.DB, sessionID string, clock *runClock) *eventSink {
 	return &eventSink{ctx: ctx, db: db, sessionID: sessionID, clock: clock}
+}
+
+func (s *eventSink) setRedactionPolicy(policy adapterRedactionPolicy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.redaction = policy
+}
+
+func (s *eventSink) redactContent(data []byte) ([]byte, bool) {
+	s.mu.Lock()
+	policy := s.redaction
+	s.mu.Unlock()
+	return policy.redact(data)
 }
 
 func (s *eventSink) append(eventType string, payload any) error {
@@ -70,10 +84,6 @@ func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMeta
 	return nil
 }
 
-// publishSnapshot serializes state.snapshot publication with every other event
-// emitted through this sink. The monotonic clock sample is taken only after the
-// shared lock is held, so concurrent terminal output and reconciliation cannot
-// commit a newer event before a snapshot carrying an older monotonic timestamp.
 func (s *eventSink) publishSnapshot(
 	ctx context.Context,
 	cas state.InspectableObjectStore,
@@ -95,9 +105,6 @@ func (s *eventSink) publishSnapshot(
 	return published, nil
 }
 
-// publishArtifact serializes artifact.discovered publication with terminal,
-// process, filesystem, and snapshot events. The SQLite artifact row and its
-// event are committed atomically by persistence.PublishArtifact.
 func (s *eventSink) publishArtifact(
 	ctx context.Context,
 	req persistence.PublishArtifactRequest,
@@ -125,10 +132,9 @@ func (s *eventSink) err() error {
 }
 
 type streamEventWriter struct {
-	sink      *eventSink
-	stream    string
-	output    io.Writer
-	redaction adapterRedactionPolicy
+	sink   *eventSink
+	stream string
+	output io.Writer
 
 	mu      sync.Mutex
 	pending []byte
@@ -161,7 +167,6 @@ func (w *streamEventWriter) Write(p []byte) (int, error) {
 func (w *streamEventWriter) capture(p []byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	w.pending = append(w.pending, p...)
 	for len(w.pending) > 0 {
 		if newline := bytes.IndexByte(w.pending, '\n'); newline >= 0 {
@@ -179,8 +184,6 @@ func (w *streamEventWriter) capture(p []byte) {
 	}
 }
 
-// Flush persists a final unterminated stream segment after the child process
-// and os/exec's copy goroutines have completed.
 func (w *streamEventWriter) Flush() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -194,7 +197,7 @@ func (w *streamEventWriter) Flush() error {
 }
 
 func (w *streamEventWriter) emitSegment(segment []byte) error {
-	persisted, redacted := w.redaction.redact(segment)
+	persisted, redacted := w.sink.redactContent(segment)
 	reason := ""
 	if redacted {
 		reason = "privacy-filter"
