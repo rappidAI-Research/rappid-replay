@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/event"
-	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/internal/terminal"
 )
 
@@ -32,9 +31,7 @@ type pipeExecution struct {
 }
 
 func (e *pipeExecution) PID() int { return e.command.Process.Pid }
-
 func (e *pipeExecution) Wait() error { return e.command.Wait() }
-
 func (e *pipeExecution) Finalize() error {
 	return errors.Join(e.stdoutRecorder.Flush(), e.stderrRecorder.Flush())
 }
@@ -73,8 +70,6 @@ type ptyExecution struct {
 	sink           *eventSink
 }
 
-// ptyRunning adds the immutable PID to ptyExecution without exposing the
-// third-party command implementation to the recorder lifecycle.
 type ptyRunning struct {
 	*ptyExecution
 	pid int
@@ -94,7 +89,6 @@ func (e *ptyExecution) Wait() error {
 
 func (e *ptyExecution) Finalize() error {
 	e.stopPumps()
-
 	var outputErr error
 	select {
 	case outputErr = <-e.outputDone:
@@ -316,7 +310,7 @@ func persistPTYInput(sink *eventSink, data []byte, policy string) error {
 			Capture string `json:"capture"`
 		}{Bytes: len(data), Capture: "metadata-only"})
 	case "full":
-		persisted, redacted := privacy.RedactKnownSecrets(data)
+		persisted, redacted := sink.redactContent(data)
 		return sink.appendWithPrivacy("terminal.stdin", struct {
 			Encoding    string `json:"encoding"`
 			DataB64     string `json:"data_b64"`
