@@ -11,7 +11,6 @@ import (
 
 	"github.com/rappidAI-Research/rappid-replay/internal/event"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
-	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/internal/state"
 )
 
@@ -126,9 +125,10 @@ func (s *eventSink) err() error {
 }
 
 type streamEventWriter struct {
-	sink   *eventSink
-	stream string
-	output io.Writer
+	sink      *eventSink
+	stream    string
+	output    io.Writer
+	redaction adapterRedactionPolicy
 
 	mu      sync.Mutex
 	pending []byte
@@ -194,10 +194,10 @@ func (w *streamEventWriter) Flush() error {
 }
 
 func (w *streamEventWriter) emitSegment(segment []byte) error {
-	persisted, redacted := privacy.RedactKnownSecrets(segment)
+	persisted, redacted := w.redaction.redact(segment)
 	reason := ""
 	if redacted {
-		reason = "known-secret-pattern"
+		reason = "privacy-filter"
 	}
 	return w.emitPersisted(persisted, len(segment), redacted, reason)
 }
@@ -216,9 +216,6 @@ func (w *streamEventWriter) emitPersisted(persisted []byte, originalBytes int, r
 		StoredBytes: len(persisted),
 		Redaction:   reason,
 	}
-	// Terminal content is separate from technical metadata. Known credentials
-	// are redacted before the JSON payload reaches SQLite, and the privacy flag
-	// makes the loss of byte fidelity explicit to playback/export consumers.
 	return w.sink.appendWithPrivacy(
 		"terminal."+w.stream,
 		payload,
