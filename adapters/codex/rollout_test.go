@@ -123,8 +123,12 @@ func TestValidateRolloutPathConfinesReadsToSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid rollout rejected: %v", err)
 	}
-	if filepath.Clean(resolved) != filepath.Clean(inside) {
-		t.Fatalf("resolved path = %q, want %q", resolved, inside)
+	expected, err := filepath.EvalSymlinks(inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(expected) {
+		t.Fatalf("resolved path = %q, want %q", resolved, expected)
 	}
 
 	outside := filepath.Join(home, "outside.jsonl")
