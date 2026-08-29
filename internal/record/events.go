@@ -49,6 +49,19 @@ func (s *eventSink) redactContent(data []byte) ([]byte, bool) {
 	return policy.redact(data)
 }
 
+func (s *eventSink) redactionReason(redacted bool) string {
+	if !redacted {
+		return ""
+	}
+	s.mu.Lock()
+	hasAdapterLiterals := len(s.redaction.literals) != 0
+	s.mu.Unlock()
+	if hasAdapterLiterals {
+		return "privacy-filter"
+	}
+	return "known-secret-pattern"
+}
+
 func (s *eventSink) append(eventType string, payload any) error {
 	return s.appendTechnical(eventType, payload, false)
 }
@@ -198,11 +211,7 @@ func (w *streamEventWriter) Flush() error {
 
 func (w *streamEventWriter) emitSegment(segment []byte) error {
 	persisted, redacted := w.sink.redactContent(segment)
-	reason := ""
-	if redacted {
-		reason = "privacy-filter"
-	}
-	return w.emitPersisted(persisted, len(segment), redacted, reason)
+	return w.emitPersisted(persisted, len(segment), redacted, w.sink.redactionReason(redacted))
 }
 
 func (w *streamEventWriter) emitPersisted(persisted []byte, originalBytes int, redacted bool, reason string) error {
