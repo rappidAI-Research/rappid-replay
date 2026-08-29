@@ -18,10 +18,12 @@ func selectRunAdapter(ctx context.Context, deps Dependencies, command []string, 
 			return adapter.Selection{}, fmt.Errorf("initialize generic adapter registry: %w", err)
 		}
 	}
-	return registry.Select(ctx, adapter.DetectionInput{
+	selection := registry.Select(ctx, adapter.DetectionInput{
 		Command:    append([]string(nil), command...),
 		WorkingDir: workingDir,
-	}), nil
+	})
+	selection, _ = redactAdapterSelectionForPersistence(selection)
+	return selection, nil
 }
 
 // redactAdapterSelectionForPersistence treats adapter-provided detection text as
