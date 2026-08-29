@@ -27,5 +27,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-023 — Cross-platform PTY recording — **Accepted**
 - ADR-024 — Workspace artifact discovery is derived from published state transitions — **Accepted**
 - ADR-025 — Adapter SDK v1 is additive and cannot gate generic recording — **Accepted**
+- ADR-026 — Adapter hooks are additive, privacy-filtered, and failure-isolated — **Accepted**
 
 ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
