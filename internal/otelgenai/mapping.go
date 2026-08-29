@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,10 +72,15 @@ type usagePayload struct {
 }
 
 type toolPair struct {
-	call       event.Event
-	callValue  toolCallPayload
-	result     *event.Event
+	call        event.Event
+	callValue   toolCallPayload
+	result      *event.Event
 	resultValue toolResultPayload
+}
+
+type orderedDraft struct {
+	draft event.Draft
+	order int
 }
 
 // ExportReplayEvents maps canonical Replay agent events to one OTLP/JSON trace.
@@ -124,7 +130,7 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 			}
 			key := toolKey(payload.CallID, item.Seq)
 			if _, exists := calls[key]; exists {
-				key = key + ":" + strconv.FormatUint(item.Seq, 10)
+				key += ":" + strconv.FormatUint(item.Seq, 10)
 			}
 			calls[key] = &toolPair{call: item, callValue: payload}
 			toolOrder = append(toolOrder, key)
@@ -149,7 +155,12 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 			if !matched {
 				key := "result:" + strconv.FormatUint(item.Seq, 10)
 				copy := item
-				calls[key] = &toolPair{call: item, callValue: toolCallPayload{Name: "unknown", CallID: payload.CallID}, result: &copy, resultValue: payload}
+				calls[key] = &toolPair{
+					call:        item,
+					callValue:   toolCallPayload{Name: "unknown", CallID: payload.CallID},
+					result:      &copy,
+					resultValue: payload,
+				}
 				toolOrder = append(toolOrder, key)
 			}
 		}
@@ -158,6 +169,7 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 	if !haveSession && len(messages) == 0 && len(toolOrder) == 0 && latestUsage == nil {
 		return nil, ErrNoGenAITelemetry
 	}
+
 	provider := strings.TrimSpace(options.ProviderName)
 	if provider == "" {
 		provider = strings.TrimSpace(session.ModelProvider)
@@ -177,6 +189,14 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 	}
 
 	first, last := agentTimeBounds(events)
+	firstNano, err := otelNano(first)
+	if err != nil {
+		return nil, err
+	}
+	lastNano, err := otelNano(last)
+	if err != nil {
+		return nil, err
+	}
 	traceID := deterministicID(16, "trace", events[0].SessionID)
 	rootSpanID := deterministicID(8, "span", events[0].SessionID, "root")
 	rootAttributes := []KeyValue{
@@ -209,14 +229,18 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 		SpanID:            rootSpanID,
 		Name:              "invoke_agent " + agentName,
 		Kind:              SpanKindInternal,
-		StartTimeUnixNano: NanoTime(first.UnixNano()),
-		EndTimeUnixNano:   NanoTime(last.UnixNano()),
+		StartTimeUnixNano: firstNano,
+		EndTimeUnixNano:   lastNano,
 		Attributes:        rootAttributes,
 	}
 	for _, item := range messages {
 		var payload messagePayload
 		if err := json.Unmarshal(item.Payload, &payload); err != nil {
 			return nil, fmt.Errorf("decode agent.message at seq %d: %w", item.Seq, err)
+		}
+		eventNano, err := otelNano(item.WallTimeUTC)
+		if err != nil {
+			return nil, fmt.Errorf("encode agent.message at seq %d: %w", item.Seq, err)
 		}
 		attrs := []KeyValue{
 			Attr("rappid.replay.seq", IntValue(int64(item.Seq))),
@@ -235,7 +259,7 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 			attrs = append(attrs, Attr("rappid.replay.message.text", StringValue(payload.Text)))
 		}
 		root.Events = append(root.Events, SpanEvent{
-			TimeUnixNano: NanoTime(item.WallTimeUTC.UnixNano()),
+			TimeUnixNano: eventNano,
 			Name:         "rappid.replay.agent.message",
 			Attributes:   attrs,
 		})
@@ -251,6 +275,14 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 		end := pair.call.WallTimeUTC
 		if pair.result != nil && pair.result.WallTimeUTC.After(end) {
 			end = pair.result.WallTimeUTC
+		}
+		startNano, err := otelNano(pair.call.WallTimeUTC)
+		if err != nil {
+			return nil, fmt.Errorf("encode tool call at seq %d: %w", pair.call.Seq, err)
+		}
+		endNano, err := otelNano(end)
+		if err != nil {
+			return nil, fmt.Errorf("encode tool result at seq %d: %w", pair.call.Seq, err)
 		}
 		attrs := []KeyValue{
 			Attr("gen_ai.operation.name", StringValue("execute_tool")),
@@ -278,8 +310,8 @@ func ExportReplayEvents(input []event.Event, options ExportOptions) ([]byte, err
 			ParentSpanID:      rootSpanID,
 			Name:              "execute_tool " + name,
 			Kind:              SpanKindInternal,
-			StartTimeUnixNano: NanoTime(pair.call.WallTimeUTC.UnixNano()),
-			EndTimeUnixNano:   NanoTime(end.UnixNano()),
+			StartTimeUnixNano: startNano,
+			EndTimeUnixNano:   endNano,
 			Attributes:        attrs,
 		})
 	}
@@ -314,6 +346,12 @@ func canonicalEventOrder(input []event.Event) ([]event.Event, error) {
 		if item.Seq == 0 || (i > 0 && item.Seq == out[i-1].Seq) {
 			return nil, fmt.Errorf("events contain invalid or duplicate sequence %d", item.Seq)
 		}
+		if item.WallTimeUTC.IsZero() {
+			return nil, fmt.Errorf("event seq %d has zero wall time", item.Seq)
+		}
+		if item.Seq > math.MaxInt64 {
+			return nil, fmt.Errorf("event seq %d exceeds OTLP int64 attribute range", item.Seq)
+		}
 	}
 	return out, nil
 }
@@ -343,8 +381,8 @@ func agentTimeBounds(events []event.Event) (time.Time, time.Time) {
 func deterministicID(size int, parts ...string) string {
 	hash := sha256.New()
 	for _, part := range parts {
-		hash.Write([]byte(part))
-		hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
 	}
 	sum := hash.Sum(nil)
 	return hex.EncodeToString(sum[:size])
@@ -482,10 +520,7 @@ func ImportTraceJSON(data []byte, sessionID string, options ImportOptions) ([]ev
 	if source == "" {
 		source = "otel"
 	}
-	type orderedDraft struct {
-		draft event.Draft
-		order int
-	}
+
 	var ordered []orderedDraft
 	order := 0
 	appendDraft := func(draft event.Draft) {
@@ -502,34 +537,53 @@ func ImportTraceJSON(data []byte, sessionID string, options ImportOptions) ([]ev
 				if operation == "" && provider == "" {
 					continue
 				}
+				if provider == "" {
+					provider = "otel"
+				}
+				startTime, err := replayTime(span.StartTimeUnixNano)
+				if err != nil {
+					return nil, fmt.Errorf("span %s start time: %w", span.SpanID, err)
+				}
+				endTime, err := replayTime(span.EndTimeUnixNano)
+				if err != nil {
+					return nil, fmt.Errorf("span %s end time: %w", span.SpanID, err)
+				}
 
 				spanPayload := map[string]any{
-					"trace_id": span.TraceID,
-					"span_id": span.SpanID,
-					"parent_span_id": span.ParentSpanID,
-					"name": span.Name,
-					"kind": span.Kind,
+					"trace_id":             span.TraceID,
+					"span_id":              span.SpanID,
+					"parent_span_id":       span.ParentSpanID,
+					"name":                 span.Name,
+					"kind":                 span.Kind,
 					"start_time_unix_nano": uint64(span.StartTimeUnixNano),
-					"end_time_unix_nano": uint64(span.EndTimeUnixNano),
-					"operation": operation,
-					"provider": provider,
-					"attributes": portableAttributes(span.Attributes, options.IncludeContent),
+					"end_time_unix_nano":   uint64(span.EndTimeUnixNano),
+					"operation":            operation,
+					"provider":             provider,
+					"attributes":           portableAttributes(span.Attributes, options.IncludeContent),
 				}
 				payload, err := json.Marshal(spanPayload)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("encode imported OTel span: %w", err)
 				}
-				draft := event.NewDraft(sessionID, "agent.otel.span", source, nanoTime(span.StartTimeUnixNano), event.Privacy{Classification: "content"}, payload)
+				draft := event.NewDraft(sessionID, "agent.otel.span", source, startTime, event.Privacy{Classification: "content"}, payload)
 				draft.SpanID = span.SpanID
 				appendDraft(draft)
 
 				if operation == "execute_tool" {
-					appendImportedToolEvents(&ordered, &order, sessionID, source, span, attrs, options.IncludeContent)
+					if err := appendImportedToolEvents(&ordered, &order, sessionID, source, provider, span, attrs, startTime, endTime, options.IncludeContent); err != nil {
+						return nil, err
+					}
 				}
-				appendImportedUsage(&ordered, &order, sessionID, source, span, attrs)
-				appendImportedOutputMessages(&ordered, &order, sessionID, source, span, attrs, options.IncludeContent)
+				if err := appendImportedUsage(&ordered, &order, sessionID, source, provider, span, attrs, endTime); err != nil {
+					return nil, err
+				}
+				if err := appendImportedOutputMessages(&ordered, &order, sessionID, source, provider, span, attrs, endTime, options.IncludeContent); err != nil {
+					return nil, err
+				}
 				for _, spanEvent := range span.Events {
-					appendImportedSpanEvent(&ordered, &order, sessionID, source, span, spanEvent, options.IncludeContent)
+					if err := appendImportedSpanEvent(&ordered, &order, sessionID, source, provider, span, spanEvent, options.IncludeContent); err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
@@ -550,35 +604,60 @@ func ImportTraceJSON(data []byte, sessionID string, options ImportOptions) ([]ev
 	return out, nil
 }
 
-func appendImportedToolEvents(ordered *[]struct{ draft event.Draft; order int }, order *int, sessionID, source string, span Span, attrs map[string]AnyValue, includeContent bool) {
+func appendImportedToolEvents(
+	ordered *[]orderedDraft,
+	order *int,
+	sessionID, source, provider string,
+	span Span,
+	attrs map[string]AnyValue,
+	startTime, endTime time.Time,
+	includeContent bool,
+) error {
 	name, _ := anyString(attrs["gen_ai.tool.name"])
 	callID, _ := anyString(attrs["gen_ai.tool.call.id"])
 	kind, _ := anyString(attrs["gen_ai.tool.type"])
-	call := map[string]any{"provider": "otel", "kind": kind, "name": name, "call_id": callID}
+	call := toolCallPayload{Provider: provider, Kind: kind, Name: name, CallID: callID}
 	if includeContent {
 		if value, ok := attrs["gen_ai.tool.call.arguments"]; ok {
-			call["arguments"] = anyValuePortable(value)
+			call.Arguments = portableString(value)
 		}
 	}
-	callJSON, _ := json.Marshal(call)
-	draft := event.NewDraft(sessionID, "agent.tool_call", source, nanoTime(span.StartTimeUnixNano), event.Privacy{Classification: "content"}, callJSON)
+	callJSON, err := json.Marshal(call)
+	if err != nil {
+		return fmt.Errorf("encode imported tool call: %w", err)
+	}
+	draft := event.NewDraft(sessionID, "agent.tool_call", source, startTime, event.Privacy{Classification: "content"}, callJSON)
 	draft.SpanID = span.SpanID
-	*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: draft, order: *order})
-	*order++
-	if result, ok := attrs["gen_ai.tool.call.result"]; ok {
-		payload := map[string]any{"provider": "otel", "kind": kind, "call_id": callID}
-		if includeContent {
-			payload["output"] = anyValuePortable(result)
-		}
-		encoded, _ := json.Marshal(payload)
-		resultDraft := event.NewDraft(sessionID, "agent.tool_result", source, nanoTime(span.EndTimeUnixNano), event.Privacy{Classification: "content"}, encoded)
-		resultDraft.SpanID = span.SpanID
-		*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: resultDraft, order: *order})
-		*order++
+	*ordered = append(*ordered, orderedDraft{draft: draft, order: *order})
+	*order = *order + 1
+
+	result, ok := attrs["gen_ai.tool.call.result"]
+	if !ok {
+		return nil
 	}
+	resultPayload := toolResultPayload{Provider: provider, Kind: kind, CallID: callID}
+	if includeContent {
+		resultPayload.Output = portableString(result)
+	}
+	encoded, err := json.Marshal(resultPayload)
+	if err != nil {
+		return fmt.Errorf("encode imported tool result: %w", err)
+	}
+	resultDraft := event.NewDraft(sessionID, "agent.tool_result", source, endTime, event.Privacy{Classification: "content"}, encoded)
+	resultDraft.SpanID = span.SpanID
+	*ordered = append(*ordered, orderedDraft{draft: resultDraft, order: *order})
+	*order = *order + 1
+	return nil
 }
 
-func appendImportedUsage(ordered *[]struct{ draft event.Draft; order int }, order *int, sessionID, source string, span Span, attrs map[string]AnyValue) {
+func appendImportedUsage(
+	ordered *[]orderedDraft,
+	order *int,
+	sessionID, source, provider string,
+	span Span,
+	attrs map[string]AnyValue,
+	endTime time.Time,
+) error {
 	reverse := map[string]string{
 		"gen_ai.usage.input_tokens":             "input_tokens",
 		"gen_ai.usage.output_tokens":            "output_tokens",
@@ -593,30 +672,57 @@ func appendImportedUsage(ordered *[]struct{ draft event.Draft; order int }, orde
 		}
 	}
 	if len(tokens) == 0 {
-		return
+		return nil
 	}
-	encoded, _ := json.Marshal(usagePayload{Provider: "otel", Tokens: tokens})
-	draft := event.NewDraft(sessionID, "agent.usage", source, nanoTime(span.EndTimeUnixNano), event.Privacy{Classification: "technical"}, encoded)
+	encoded, err := json.Marshal(usagePayload{Provider: provider, Tokens: tokens})
+	if err != nil {
+		return fmt.Errorf("encode imported token usage: %w", err)
+	}
+	draft := event.NewDraft(sessionID, "agent.usage", source, endTime, event.Privacy{Classification: "technical"}, encoded)
 	draft.SpanID = span.SpanID
-	*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: draft, order: *order})
-	*order++
+	*ordered = append(*ordered, orderedDraft{draft: draft, order: *order})
+	*order = *order + 1
+	return nil
 }
 
-func appendImportedOutputMessages(ordered *[]struct{ draft event.Draft; order int }, order *int, sessionID, source string, span Span, attrs map[string]AnyValue, includeContent bool) {
+func appendImportedOutputMessages(
+	ordered *[]orderedDraft,
+	order *int,
+	sessionID, source, provider string,
+	span Span,
+	attrs map[string]AnyValue,
+	endTime time.Time,
+	includeContent bool,
+) error {
 	value, ok := attrs["gen_ai.output.messages"]
 	if !ok || !includeContent {
-		return
+		return nil
 	}
-	for _, message := range extractMessages(value) {
-		encoded, _ := json.Marshal(message)
-		draft := event.NewDraft(sessionID, "agent.message", source, nanoTime(span.EndTimeUnixNano), event.Privacy{Classification: "content"}, encoded)
+	for _, message := range extractMessages(value, provider) {
+		encoded, err := json.Marshal(message)
+		if err != nil {
+			return fmt.Errorf("encode imported output message: %w", err)
+		}
+		draft := event.NewDraft(sessionID, "agent.message", source, endTime, event.Privacy{Classification: "content"}, encoded)
 		draft.SpanID = span.SpanID
-		*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: draft, order: *order})
-		*order++
+		*ordered = append(*ordered, orderedDraft{draft: draft, order: *order})
+		*order = *order + 1
 	}
+	return nil
 }
 
-func appendImportedSpanEvent(ordered *[]struct{ draft event.Draft; order int }, order *int, sessionID, source string, span Span, spanEvent SpanEvent, includeContent bool) {
+func appendImportedSpanEvent(
+	ordered *[]orderedDraft,
+	order *int,
+	sessionID, source, provider string,
+	span Span,
+	spanEvent SpanEvent,
+	includeContent bool,
+) error {
+	eventTime, err := replayTime(spanEvent.TimeUnixNano)
+	if err != nil {
+		return fmt.Errorf("span %s event %q time: %w", span.SpanID, spanEvent.Name, err)
+	}
 	attrs := attributesMap(spanEvent.Attributes)
 	if spanEvent.Name == "rappid.replay.agent.message" {
 		role, _ := anyString(attrs["rappid.replay.message.role"])
@@ -625,40 +731,58 @@ func appendImportedSpanEvent(ordered *[]struct{ draft event.Draft; order int }, 
 		if includeContent {
 			text, _ = anyString(attrs["rappid.replay.message.text"])
 		}
-		payload, _ := json.Marshal(messagePayload{Provider: "otel", Role: role, Phase: phase, Text: text})
-		draft := event.NewDraft(sessionID, "agent.message", source, nanoTime(spanEvent.TimeUnixNano), event.Privacy{Classification: "content"}, payload)
+		payload, err := json.Marshal(messagePayload{Provider: provider, Role: role, Phase: phase, Text: text})
+		if err != nil {
+			return fmt.Errorf("encode imported Replay message event: %w", err)
+		}
+		draft := event.NewDraft(sessionID, "agent.message", source, eventTime, event.Privacy{Classification: "content"}, payload)
 		draft.SpanID = span.SpanID
-		*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: draft, order: *order})
-		*order++
-		return
+		*ordered = append(*ordered, orderedDraft{draft: draft, order: *order})
+		*order = *order + 1
+		return nil
 	}
 	if spanEvent.Name == "gen_ai.client.inference.operation.details" && includeContent {
 		if output, ok := attrs["gen_ai.output.messages"]; ok {
-			for _, message := range extractMessages(output) {
-				encoded, _ := json.Marshal(message)
-				draft := event.NewDraft(sessionID, "agent.message", source, nanoTime(spanEvent.TimeUnixNano), event.Privacy{Classification: "content"}, encoded)
+			for _, message := range extractMessages(output, provider) {
+				encoded, err := json.Marshal(message)
+				if err != nil {
+					return fmt.Errorf("encode imported inference message: %w", err)
+				}
+				draft := event.NewDraft(sessionID, "agent.message", source, eventTime, event.Privacy{Classification: "content"}, encoded)
 				draft.SpanID = span.SpanID
-				*ordered = append(*ordered, struct{ draft event.Draft; order int }{draft: draft, order: *order})
-				*order++
+				*ordered = append(*ordered, orderedDraft{draft: draft, order: *order})
+				*order = *order + 1
 			}
 		}
 	}
+	return nil
 }
 
-func nanoTime(value NanoTime) time.Time {
-	if value == 0 {
-		return time.Unix(0, 0).UTC()
+func otelNano(value time.Time) (NanoTime, error) {
+	if value.IsZero() {
+		return 0, fmt.Errorf("wall time is required")
 	}
-	return time.Unix(0, int64(value)).UTC()
+	nano := value.UnixNano()
+	if nano < 0 {
+		return 0, fmt.Errorf("wall time %s predates Unix epoch", value.UTC().Format(time.RFC3339Nano))
+	}
+	return NanoTime(uint64(nano)), nil
+}
+
+func replayTime(value NanoTime) (time.Time, error) {
+	if uint64(value) > math.MaxInt64 {
+		return time.Time{}, fmt.Errorf("timestamp %d exceeds Replay time range", uint64(value))
+	}
+	return time.Unix(0, int64(value)).UTC(), nil
 }
 
 var sensitiveGenAIAttributes = map[string]struct{}{
-	"gen_ai.input.messages": {},
-	"gen_ai.output.messages": {},
+	"gen_ai.input.messages":      {},
+	"gen_ai.output.messages":     {},
 	"gen_ai.system_instructions": {},
-	"gen_ai.tool.definitions": {},
+	"gen_ai.tool.definitions":    {},
 	"gen_ai.tool.call.arguments": {},
-	"gen_ai.tool.call.result": {},
+	"gen_ai.tool.call.result":    {},
 }
 
 func portableAttributes(attributes []KeyValue, includeContent bool) map[string]any {
@@ -672,6 +796,17 @@ func portableAttributes(attributes []KeyValue, includeContent bool) map[string]a
 		out[attribute.Key] = anyValuePortable(attribute.Value)
 	}
 	return out
+}
+
+func portableString(value AnyValue) string {
+	if text, ok := anyString(value); ok {
+		return text
+	}
+	encoded, err := json.Marshal(anyValuePortable(value))
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func anyValuePortable(value AnyValue) any {
@@ -703,7 +838,7 @@ func anyValuePortable(value AnyValue) any {
 	}
 }
 
-func extractMessages(value AnyValue) []messagePayload {
+func extractMessages(value AnyValue, provider string) []messagePayload {
 	if value.ArrayValue == nil {
 		return nil
 	}
@@ -739,7 +874,7 @@ func extractMessages(value AnyValue) []messagePayload {
 		if len(textParts) == 0 {
 			continue
 		}
-		out = append(out, messagePayload{Provider: "otel", Role: role, Text: strings.Join(textParts, "\n")})
+		out = append(out, messagePayload{Provider: provider, Role: role, Text: strings.Join(textParts, "\n")})
 	}
 	return out
 }
