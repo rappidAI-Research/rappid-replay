@@ -149,7 +149,9 @@ func (failingHookAdapter) Descriptor() adapter.Descriptor {
 func (failingHookAdapter) Detect(context.Context, adapter.DetectionInput) (adapter.Detection, error) {
 	return adapter.Detection{Matched: true, Confidence: 100}, nil
 }
-func (failingHookAdapter) Capabilities() adapter.Capabilities { return adapter.Capabilities{Messages: true} }
+func (failingHookAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{Messages: true}
+}
 func (failingHookAdapter) EnrichProcess(context.Context, adapter.RunContext, adapter.ProcessObservation) (adapter.ProcessEnrichment, error) {
 	return adapter.ProcessEnrichment{}, errors.New("process hook failed")
 }
