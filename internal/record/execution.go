@@ -30,7 +30,7 @@ type pipeExecution struct {
 	stderrRecorder *streamEventWriter
 }
 
-func (e *pipeExecution) PID() int { return e.command.Process.Pid }
+func (e *pipeExecution) PID() int    { return e.command.Process.Pid }
 func (e *pipeExecution) Wait() error { return e.command.Wait() }
 func (e *pipeExecution) Finalize() error {
 	return errors.Join(e.stdoutRecorder.Flush(), e.stderrRecorder.Flush())
