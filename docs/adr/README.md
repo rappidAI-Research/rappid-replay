@@ -14,6 +14,7 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-004 — SQLite for metadata and event indexing — **Accepted**
 - ADR-005 — Generic Recorder as mandatory baseline — **Accepted**
 - ADR-006 — Local-first; no rappidAI cloud required — **Accepted**
+- ADR-012 — OpenTelemetry GenAI interoperability is offline, additive, and version-pinned — **Accepted**
 - ADR-013 — Foundation library selections — **Accepted**
 - ADR-014 — Canonical recursive state trees — **Accepted**
 - ADR-015 — Verified state publication is atomic — **Accepted**
@@ -30,4 +31,4 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-026 — Adapter hooks are additive, privacy-filtered, and failure-isolated — **Accepted**
 - ADR-027 — Codex enrichment observes local rollout persistence without changing execution — **Accepted**
 
-ADRs 007–012 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
+ADRs 007–011 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
