@@ -109,7 +109,7 @@ func (e *ptyExecution) Finalize() error {
 }
 
 func isExpectedPTYClosure(err error) bool {
-	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EIO)
+	return err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, os.ErrClosed) || errors.Is(err, syscall.EIO)
 }
 
 func startRecordedExecution(
