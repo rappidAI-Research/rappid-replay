@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -33,6 +35,12 @@ const (
 	SpanKindClient      = 3
 	SpanKindProducer    = 4
 	SpanKindConsumer    = 5
+)
+
+const (
+	StatusCodeUnset = 0
+	StatusCodeOK    = 1
+	StatusCodeError = 2
 )
 
 // TraceExport is the OTLP ExportTraceServiceRequest JSON shape.
@@ -203,12 +211,12 @@ func ParseTraceJSON(data []byte) (TraceExport, error) {
 	if err := decoder.Decode(&request); err != nil {
 		return TraceExport{}, fmt.Errorf("decode OTLP trace JSON: %w", err)
 	}
-	if decoder.More() {
-		return TraceExport{}, fmt.Errorf("OTLP trace document contains multiple JSON values")
-	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err == nil {
-		return TraceExport{}, fmt.Errorf("OTLP trace document contains trailing JSON data")
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return TraceExport{}, fmt.Errorf("OTLP trace document contains multiple JSON values")
+		}
+		return TraceExport{}, fmt.Errorf("decode trailing OTLP trace JSON: %w", err)
 	}
 	if err := ValidateTraceExport(request); err != nil {
 		return TraceExport{}, err
@@ -261,8 +269,14 @@ func ValidateTraceExport(request TraceExport) error {
 }
 
 func validateSpan(span Span) error {
-	if span.Name == "" {
+	if strings.TrimSpace(span.Name) == "" {
 		return fmt.Errorf("span name is required")
+	}
+	if span.Kind < SpanKindUnspecified || span.Kind > SpanKindConsumer {
+		return fmt.Errorf("invalid span kind %d", span.Kind)
+	}
+	if span.Status.Code < StatusCodeUnset || span.Status.Code > StatusCodeError {
+		return fmt.Errorf("invalid span status code %d", span.Status.Code)
 	}
 	if err := validateHexID(span.TraceID, 16, "traceId"); err != nil {
 		return err
@@ -287,14 +301,14 @@ func validateSpan(span Span) error {
 	if len(span.Events) > MaxEventsPerSpan {
 		return fmt.Errorf("span has too many events")
 	}
-	for index, event := range span.Events {
-		if strings.TrimSpace(event.Name) == "" {
+	for index, spanEvent := range span.Events {
+		if strings.TrimSpace(spanEvent.Name) == "" {
 			return fmt.Errorf("event[%d] name is required", index)
 		}
-		if len(event.Attributes) > MaxAttributes {
+		if len(spanEvent.Attributes) > MaxAttributes {
 			return fmt.Errorf("event[%d] has too many attributes", index)
 		}
-		if err := validateAttributes(event.Attributes, 0); err != nil {
+		if err := validateAttributes(spanEvent.Attributes, 0); err != nil {
 			return fmt.Errorf("event[%d]: %w", index, err)
 		}
 	}
@@ -336,13 +350,27 @@ func validateAnyValue(value AnyValue, depth int) error {
 		return fmt.Errorf("AnyValue nesting exceeds %d", MaxAnyValueDepth)
 	}
 	set := 0
-	if value.StringValue != nil { set++ }
-	if value.BoolValue != nil { set++ }
-	if value.IntValue != nil { set++ }
-	if value.DoubleValue != nil { set++ }
-	if value.ArrayValue != nil { set++ }
-	if value.KVListValue != nil { set++ }
-	if value.BytesValue != nil { set++ }
+	if value.StringValue != nil {
+		set++
+	}
+	if value.BoolValue != nil {
+		set++
+	}
+	if value.IntValue != nil {
+		set++
+	}
+	if value.DoubleValue != nil {
+		set++
+	}
+	if value.ArrayValue != nil {
+		set++
+	}
+	if value.KVListValue != nil {
+		set++
+	}
+	if value.BytesValue != nil {
+		set++
+	}
 	if set != 1 {
 		return fmt.Errorf("AnyValue must contain exactly one value, got %d", set)
 	}
