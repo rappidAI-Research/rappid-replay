@@ -282,7 +282,7 @@ func tailRollout(ctx context.Context, path string, notBefore time.Time, interval
 					if newline < 0 {
 						break
 					}
-					line := bytes.TrimSpace(pending[:newline])
+					line := bytes.Clone(bytes.TrimSpace(pending[:newline]))
 					pending = append(pending[:0], pending[newline+1:]...)
 					if len(line) == 0 {
 						continue
