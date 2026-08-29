@@ -71,6 +71,10 @@ func (s *eventSink) appendTechnical(eventType string, payload any, redacted bool
 }
 
 func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMetadata event.Privacy) error {
+	return s.appendWithSourceAndPrivacy(recorderSource, eventType, payload, privacyMetadata)
+}
+
+func (s *eventSink) appendWithSourceAndPrivacy(source, eventType string, payload any, privacyMetadata event.Privacy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.firstErr != nil {
@@ -85,7 +89,7 @@ func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMeta
 	draft := event.NewDraft(
 		s.sessionID,
 		eventType,
-		recorderSource,
+		source,
 		wall,
 		privacyMetadata,
 		encoded,
