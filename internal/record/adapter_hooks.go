@@ -83,6 +83,13 @@ func newAdapterHookBridge(selection adapter.Selection, sessionID, workingDir str
 	}
 }
 
+func (b *adapterHookBridge) source() string {
+	if b == nil || b.desc.ID == "" {
+		return recorderSource
+	}
+	return "adapter." + b.desc.ID
+}
+
 func (b *adapterHookBridge) loadRedactionHints(ctx context.Context) error {
 	if b == nil || b.selected == nil {
 		return nil
@@ -152,7 +159,7 @@ func (b *adapterHookBridge) emitEnvironment(ctx context.Context) error {
 	if len(attributes) == 0 {
 		return nil
 	}
-	return b.sink.appendWithPrivacy("agent.environment", struct {
+	return b.sink.appendWithSourceAndPrivacy(b.source(), "agent.environment", struct {
 		Adapter    adapter.Descriptor `json:"adapter"`
 		Attributes map[string]string  `json:"attributes"`
 	}{Adapter: b.desc, Attributes: attributes}, event.Privacy{Classification: "technical", Redacted: redacted})
@@ -173,7 +180,7 @@ func (b *adapterHookBridge) enrichProcess(ctx context.Context, observation adapt
 	if len(attributes) == 0 {
 		return nil
 	}
-	return b.sink.appendWithPrivacy("agent.process.enriched", struct {
+	return b.sink.appendWithSourceAndPrivacy(b.source(), "agent.process.enriched", struct {
 		Adapter    adapter.Descriptor `json:"adapter"`
 		PID        int                `json:"pid"`
 		Attributes map[string]string  `json:"attributes"`
@@ -248,7 +255,10 @@ func (b *adapterHookBridge) emitAdapterEvent(ctx context.Context, proposed adapt
 	if !json.Valid(persisted) {
 		return fmt.Errorf("adapter event %q became invalid JSON after privacy filtering", proposed.Type)
 	}
-	return b.sink.appendWithPrivacy(proposed.Type, json.RawMessage(persisted), event.Privacy{Classification: "content", Redacted: redacted})
+	return b.sink.appendWithSourceAndPrivacy(
+		b.source(), proposed.Type, json.RawMessage(persisted),
+		event.Privacy{Classification: "content", Redacted: redacted},
+	)
 }
 
 func (b *adapterHookBridge) sanitizeAttributes(input map[string]string) (map[string]string, bool, error) {
@@ -277,7 +287,7 @@ func (b *adapterHookBridge) reportError(stage string, cause error) error {
 		return nil
 	}
 	message, redacted := b.redaction.redact([]byte(cause.Error()))
-	return b.sink.appendWithPrivacy("agent.adapter.error", struct {
+	return b.sink.appendWithSourceAndPrivacy(b.source(), "agent.adapter.error", struct {
 		Adapter adapter.Descriptor `json:"adapter"`
 		Stage   string             `json:"stage"`
 		Message string             `json:"message"`
