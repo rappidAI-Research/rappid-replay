@@ -166,6 +166,12 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
 	}
 
+	hooks := newAdapterHookBridge(adapterSelection, sessionID.String(), absWorkingDir, recordedCommand, sink)
+	if err := hooks.loadRedactionHints(ctx); err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
+	}
+	sink.setRedactionPolicy(hooks.redaction)
+
 	snapshotter := state.Snapshotter{CAS: deps.CAS, Exclude: policy.Exclude}
 	initialSnapshot, err := captureWithRetry(ctx, snapshotter, absWorkingDir)
 	if err != nil {
@@ -187,7 +193,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	result.InitialStateID = initialStateID
 	position := checkpointPosition{StateID: initialStateID, RootTreeID: initialSnapshot.RootTreeID}
 
-	fingerprint, environment, git, err := captureExecutionEnvironment(ctx, absWorkingDir, options.Env)
+	fingerprint, environment, git, err := captureExecutionEnvironmentWithRedaction(ctx, absWorkingDir, options.Env, hooks.redaction)
 	if err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
 	}
@@ -198,6 +204,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
 	}
 	if err := sink.append("git.context", git); err != nil {
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+	}
+	if err := hooks.emitEnvironment(ctx); err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
 	}
 
@@ -211,8 +220,6 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	} else {
 		watcher = created
 		defer func() { _ = watcher.Close() }()
-		// Close the narrow race between the initial snapshot and watcher setup.
-		// A no-op reconciliation publishes nothing when the root is unchanged.
 		position, err = reconcileWorkspace(
 			ctx, deps, sink, snapshotter, absWorkingDir, sessionID, position, "watcher-start",
 		)
@@ -221,9 +228,6 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		}
 	}
 
-	// Execute the original argv. Only the durable metadata copy is redacted;
-	// secrets are not reconstructed from history and remain the caller's runtime
-	// responsibility.
 	commandCtx, cancelCommand := context.WithCancel(ctx)
 	defer cancelCommand()
 	execution, err := startRecordedExecution(
@@ -233,8 +237,19 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
 	}
 	pid := execution.PID()
+	if err := hooks.enrichProcess(commandCtx, adapter.ProcessObservation{
+		PID:        pid,
+		Executable: options.Command[0],
+		Arguments:  append([]string(nil), recordedCommand...),
+	}); err != nil {
+		cancelCommand()
+		_ = execution.Wait()
+		_ = execution.Finalize()
+		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, err)
+	}
+	hooks.startEventStream(commandCtx)
 
-	processTree := startProcessTreeMonitor(commandCtx, sink, pid, cancelCommand)
+	processTree := startProcessTreeMonitor(commandCtx, sink, hooks, pid, cancelCommand)
 
 	var checkpoints *checkpointLoop
 	if watcher != nil {
@@ -246,6 +261,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 
 	waitErr := execution.Wait()
 	executionErr := execution.Finalize()
+	adapterStreamErr := hooks.stopEventStream()
 
 	processTreeResult := processTree.Stop()
 	processTreeErr := processTreeResult.Err
@@ -272,10 +288,7 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		var exitErr *exec.ExitError
 		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
-		} else if commandCtx.Err() != nil && (ctx.Err() != nil || executionErr != nil || processTreeErr != nil || checkpointErr != nil) {
-			// Command cancellation may surface without ExitError on some platforms.
-			// Preserve a technical exit boundary; the session is aborted below with
-			// the recorder/context cause that triggered cancellation.
+		} else if commandCtx.Err() != nil && (ctx.Err() != nil || executionErr != nil || adapterStreamErr != nil || processTreeErr != nil || checkpointErr != nil) {
 			exitCode = -1
 		} else {
 			return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, position.StateID, fmt.Errorf("wait for recorded command: %w", waitErr))
@@ -304,6 +317,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	}
 	if executionErr != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, executionErr)
+	}
+	if adapterStreamErr != nil {
+		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, adapterStreamErr)
 	}
 	if processTreeErr != nil {
 		return result, abortWithError(cleanupCtx, deps.DB, sink, clock, sessionID, position.StateID, processTreeErr)
