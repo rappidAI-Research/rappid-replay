@@ -7,6 +7,7 @@ import (
 	"time"
 
 	processinfo "github.com/rappidAI-Research/rappid-replay/internal/process"
+	"github.com/rappidAI-Research/rappid-replay/pkg/adapter"
 )
 
 const processDiscoveryInterval = 100 * time.Millisecond
@@ -24,13 +25,13 @@ type processTreeMonitor struct {
 	once sync.Once
 }
 
-func startProcessTreeMonitor(ctx context.Context, sink *eventSink, rootPID int, cancelCommand context.CancelFunc) *processTreeMonitor {
+func startProcessTreeMonitor(ctx context.Context, sink *eventSink, hooks *adapterHookBridge, rootPID int, cancelCommand context.CancelFunc) *processTreeMonitor {
 	monitor := &processTreeMonitor{
 		stop: make(chan struct{}),
 		done: make(chan processTreeResult, 1),
 	}
 	go func() {
-		monitor.done <- runProcessTreeMonitor(ctx, sink, rootPID, monitor.stop, cancelCommand)
+		monitor.done <- runProcessTreeMonitor(ctx, sink, hooks, rootPID, monitor.stop, cancelCommand)
 	}()
 	return monitor
 }
@@ -43,6 +44,7 @@ func (m *processTreeMonitor) Stop() processTreeResult {
 func runProcessTreeMonitor(
 	ctx context.Context,
 	sink *eventSink,
+	hooks *adapterHookBridge,
 	rootPID int,
 	stop <-chan struct{},
 	cancelCommand context.CancelFunc,
@@ -81,6 +83,13 @@ func runProcessTreeMonitor(
 				Name      string `json:"name,omitempty"`
 				Discovery string `json:"discovery"`
 			}{PID: child.PID, PPID: child.PPID, Name: child.Name, Discovery: "sampled"}); err != nil {
+				return err
+			}
+			if err := hooks.enrichProcess(ctx, adapter.ProcessObservation{
+				PID:        child.PID,
+				ParentPID:  child.PPID,
+				Executable: child.Name,
+			}); err != nil {
 				return err
 			}
 			result.Discovered++

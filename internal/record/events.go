@@ -11,7 +11,6 @@ import (
 
 	"github.com/rappidAI-Research/rappid-replay/internal/event"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
-	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/internal/state"
 )
 
@@ -28,12 +27,39 @@ type eventSink struct {
 	sessionID string
 	clock     *runClock
 
-	mu       sync.Mutex
-	firstErr error
+	mu        sync.Mutex
+	firstErr  error
+	redaction adapterRedactionPolicy
 }
 
 func newEventSink(ctx context.Context, db *persistence.DB, sessionID string, clock *runClock) *eventSink {
 	return &eventSink{ctx: ctx, db: db, sessionID: sessionID, clock: clock}
+}
+
+func (s *eventSink) setRedactionPolicy(policy adapterRedactionPolicy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.redaction = policy
+}
+
+func (s *eventSink) redactContent(data []byte) ([]byte, bool) {
+	s.mu.Lock()
+	policy := s.redaction
+	s.mu.Unlock()
+	return policy.redact(data)
+}
+
+func (s *eventSink) redactionReason(redacted bool) string {
+	if !redacted {
+		return ""
+	}
+	s.mu.Lock()
+	hasAdapterLiterals := len(s.redaction.literals) != 0
+	s.mu.Unlock()
+	if hasAdapterLiterals {
+		return "privacy-filter"
+	}
+	return "known-secret-pattern"
 }
 
 func (s *eventSink) append(eventType string, payload any) error {
@@ -45,6 +71,10 @@ func (s *eventSink) appendTechnical(eventType string, payload any, redacted bool
 }
 
 func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMetadata event.Privacy) error {
+	return s.appendWithSourceAndPrivacy(recorderSource, eventType, payload, privacyMetadata)
+}
+
+func (s *eventSink) appendWithSourceAndPrivacy(source, eventType string, payload any, privacyMetadata event.Privacy) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.firstErr != nil {
@@ -59,7 +89,7 @@ func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMeta
 	draft := event.NewDraft(
 		s.sessionID,
 		eventType,
-		recorderSource,
+		source,
 		wall,
 		privacyMetadata,
 		encoded,
@@ -71,10 +101,6 @@ func (s *eventSink) appendWithPrivacy(eventType string, payload any, privacyMeta
 	return nil
 }
 
-// publishSnapshot serializes state.snapshot publication with every other event
-// emitted through this sink. The monotonic clock sample is taken only after the
-// shared lock is held, so concurrent terminal output and reconciliation cannot
-// commit a newer event before a snapshot carrying an older monotonic timestamp.
 func (s *eventSink) publishSnapshot(
 	ctx context.Context,
 	cas state.InspectableObjectStore,
@@ -96,9 +122,6 @@ func (s *eventSink) publishSnapshot(
 	return published, nil
 }
 
-// publishArtifact serializes artifact.discovered publication with terminal,
-// process, filesystem, and snapshot events. The SQLite artifact row and its
-// event are committed atomically by persistence.PublishArtifact.
 func (s *eventSink) publishArtifact(
 	ctx context.Context,
 	req persistence.PublishArtifactRequest,
@@ -161,7 +184,6 @@ func (w *streamEventWriter) Write(p []byte) (int, error) {
 func (w *streamEventWriter) capture(p []byte) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
 	w.pending = append(w.pending, p...)
 	for len(w.pending) > 0 {
 		if newline := bytes.IndexByte(w.pending, '\n'); newline >= 0 {
@@ -179,8 +201,6 @@ func (w *streamEventWriter) capture(p []byte) {
 	}
 }
 
-// Flush persists a final unterminated stream segment after the child process
-// and os/exec's copy goroutines have completed.
 func (w *streamEventWriter) Flush() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -194,12 +214,8 @@ func (w *streamEventWriter) Flush() error {
 }
 
 func (w *streamEventWriter) emitSegment(segment []byte) error {
-	persisted, redacted := privacy.RedactKnownSecrets(segment)
-	reason := ""
-	if redacted {
-		reason = "known-secret-pattern"
-	}
-	return w.emitPersisted(persisted, len(segment), redacted, reason)
+	persisted, redacted := w.sink.redactContent(segment)
+	return w.emitPersisted(persisted, len(segment), redacted, w.sink.redactionReason(redacted))
 }
 
 func (w *streamEventWriter) emitPersisted(persisted []byte, originalBytes int, redacted bool, reason string) error {
@@ -216,9 +232,6 @@ func (w *streamEventWriter) emitPersisted(persisted []byte, originalBytes int, r
 		StoredBytes: len(persisted),
 		Redaction:   reason,
 	}
-	// Terminal content is separate from technical metadata. Known credentials
-	// are redacted before the JSON payload reaches SQLite, and the privacy flag
-	// makes the loss of byte fidelity explicit to playback/export consumers.
 	return w.sink.appendWithPrivacy(
 		"terminal."+w.stream,
 		payload,
