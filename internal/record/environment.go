@@ -54,11 +54,20 @@ type gitContext struct {
 }
 
 func captureExecutionEnvironment(ctx context.Context, workingDir string, configured []string) ([]byte, environmentSummary, gitContext, error) {
+	return captureExecutionEnvironmentWithRedaction(ctx, workingDir, configured, adapterRedactionPolicy{})
+}
+
+func captureExecutionEnvironmentWithRedaction(
+	ctx context.Context,
+	workingDir string,
+	configured []string,
+	redaction adapterRedactionPolicy,
+) ([]byte, environmentSummary, gitContext, error) {
 	effective := configured
 	if effective == nil {
 		effective = os.Environ()
 	}
-	variables, redactedCount, malformedCount := captureEnvironmentVariables(effective, runtime.GOOS)
+	variables, redactedCount, malformedCount := captureEnvironmentVariablesWithRedaction(effective, runtime.GOOS, redaction)
 	git := captureGitContext(ctx, workingDir)
 	fingerprint := environmentFingerprint{
 		Schema:    environmentSchemaV1,
@@ -85,6 +94,10 @@ func captureExecutionEnvironment(ctx context.Context, workingDir string, configu
 }
 
 func captureEnvironmentVariables(entries []string, goos string) ([]environmentVariable, int, int) {
+	return captureEnvironmentVariablesWithRedaction(entries, goos, adapterRedactionPolicy{})
+}
+
+func captureEnvironmentVariablesWithRedaction(entries []string, goos string, redaction adapterRedactionPolicy) ([]environmentVariable, int, int) {
 	// execve semantics are effectively last-value-wins for duplicate names in
 	// the environments Replay targets. Windows names are case-insensitive.
 	byName := make(map[string]environmentVariable, len(entries))
@@ -94,6 +107,9 @@ func captureEnvironmentVariables(entries []string, goos string) ([]environmentVa
 			continue
 		}
 		redactedValue, redacted := privacy.RedactEnvironmentValue(name, value)
+		if !redacted {
+			redactedValue, redacted = redaction.redactEnvironment(name, value)
+		}
 		item := environmentVariable{Name: name, Value: redactedValue, Redacted: redacted, Malformed: !ok}
 		key := name
 		if goos == "windows" {
