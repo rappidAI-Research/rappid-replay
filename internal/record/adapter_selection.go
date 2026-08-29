@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rappidAI-Research/rappid-replay/adapters/codex"
 	"github.com/rappidAI-Research/rappid-replay/adapters/generic"
 	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
 	"github.com/rappidAI-Research/rappid-replay/pkg/adapter"
@@ -13,9 +14,9 @@ func selectRunAdapter(ctx context.Context, deps Dependencies, command []string, 
 	registry := deps.Adapters
 	if registry == nil {
 		var err error
-		registry, err = adapter.NewRegistry(generic.New())
+		registry, err = adapter.NewRegistry(generic.New(), codex.New())
 		if err != nil {
-			return adapter.Selection{}, fmt.Errorf("initialize generic adapter registry: %w", err)
+			return adapter.Selection{}, fmt.Errorf("initialize built-in adapter registry: %w", err)
 		}
 	}
 	selection := registry.Select(ctx, adapter.DetectionInput{
