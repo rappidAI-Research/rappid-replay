@@ -53,3 +53,48 @@ func TestInspectSnapshotReturnsEveryUniqueReachableObject(t *testing.T) {
 		}
 	}
 }
+
+func TestInspectSnapshotCountsRepeatedSubtreeButCatalogsUniqueObjects(t *testing.T) {
+	cas, err := store.NewLocalStore(t.TempDir(), bytes.Repeat([]byte{0x53}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cas.Close() })
+
+	blobID, err := cas.PutObject(store.ObjectBlob, []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childBytes, err := CanonicalBytes(NewTree([]Entry{{
+		Name: []byte("same.txt"), Kind: EntryFile, Mode: 0o600, Size: 1, ObjectID: blobID,
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, err := cas.PutObject(store.ObjectTree, childBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootBytes, err := CanonicalBytes(NewTree([]Entry{
+		{Name: []byte("a"), Kind: EntryDir, Mode: 0o700, ObjectID: childID},
+		{Name: []byte("b"), Kind: EntryDir, Mode: 0o700, ObjectID: childID},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID, err := cas.PutObject(store.ObjectTree, rootBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inspection, err := InspectSnapshot(cas, rootID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Verification.Trees != 3 || inspection.Verification.Directories != 2 || inspection.Verification.Files != 2 || inspection.Verification.FileBytes != 2 {
+		t.Fatalf("logical verification = %+v", inspection.Verification)
+	}
+	if len(inspection.Objects) != 3 {
+		t.Fatalf("unique object count = %d, want 3", len(inspection.Objects))
+	}
+}
