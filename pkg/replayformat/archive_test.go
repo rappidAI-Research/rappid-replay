@@ -75,9 +75,9 @@ func TestValidateArchiveEntrySetRejectsUnexpectedPayload(t *testing.T) {
 	files := map[string]*zip.File{
 		ManifestPath: {},
 		ChecksumsPath: {},
-		"sessions/" + manifest.Sessions[0].ID + "/session.json":        {},
-		"sessions/" + manifest.Sessions[0].ID + "/events.ndjson.zst":  {},
-		"sessions/" + manifest.Sessions[0].ID + "/states.ndjson.zst":  {},
+		"sessions/" + manifest.Sessions[0].ID + "/session.json":          {},
+		"sessions/" + manifest.Sessions[0].ID + "/events.ndjson.zst":    {},
+		"sessions/" + manifest.Sessions[0].ID + "/states.ndjson.zst":    {},
 		"sessions/" + manifest.Sessions[0].ID + "/artifacts.ndjson.zst": {},
 		"unexpected.bin": {},
 	}
