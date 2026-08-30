@@ -45,6 +45,23 @@ func TestNormalizeEventsRetainsTechnicalCommandDifference(t *testing.T) {
 	}
 }
 
+func TestNormalizeEventsIgnoresReplayLocalPayloadIDs(t *testing.T) {
+	left := []event.Event{testEvent(1, "state.snapshot", `{"state_id":"st_left","root_tree_id":"b3:same","role":"checkpoint","files":2}`)}
+	right := []event.Event{testEvent(20, "state.snapshot", `{"state_id":"st_right","root_tree_id":"b3:same","role":"checkpoint","files":2}`)}
+
+	leftNormalized, err := normalizeEvents(context.Background(), nil, left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightNormalized, err := normalizeEvents(context.Background(), nil, right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !compareTimeline(leftNormalized, rightNormalized).Equal {
+		t.Fatal("Replay-local state IDs caused a false technical divergence")
+	}
+}
+
 func TestNormalizeEventsDoesNotStripProviderPayloadFields(t *testing.T) {
 	left := []event.Event{testEvent(1, "agent.message", `{"session_id":"provider-a","cwd":"remote-a","pid":1}`)}
 	right := []event.Event{testEvent(1, "agent.message", `{"session_id":"provider-b","cwd":"remote-b","pid":2}`)}
