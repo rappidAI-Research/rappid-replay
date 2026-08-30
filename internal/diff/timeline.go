@@ -30,6 +30,16 @@ var sessionStartRuntimePayloadKeys = map[string]struct{}{
 	"fork_state_id":     {},
 }
 
+var snapshotRuntimePayloadKeys = map[string]struct{}{
+	"state_id": {},
+}
+
+var artifactRuntimePayloadKeys = map[string]struct{}{
+	"artifact_id":   {},
+	"from_state_id": {},
+	"state_id":      {},
+}
+
 type normalizedEvent struct {
 	summary EventSummary
 	key     string
@@ -131,10 +141,11 @@ func normalizedPayload(eventType string, raw json.RawMessage) (json.RawMessage, 
 	return json.RawMessage(encoded), nil
 }
 
-// scrubRuntimeIdentity removes only fields whose values are allocated by the
-// current Replay execution itself. The removal is deliberately event-specific
-// and top-level: arbitrary adapter/provider payloads keep fields named pid,
-// session_id, cwd, and similar because those can be meaningful evidence there.
+// scrubRuntimeIdentity removes only fields allocated by the current Replay
+// execution itself. Removal is event-specific and top-level: arbitrary adapter
+// and provider payloads keep same-named fields because those can be meaningful
+// evidence. State references in the envelope are separately normalized to the
+// referenced root-tree identity.
 func scrubRuntimeIdentity(eventType string, value any) any {
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -146,6 +157,10 @@ func scrubRuntimeIdentity(eventType string, value any) any {
 		keys = processRuntimePayloadKeys
 	case eventType == "session.started":
 		keys = sessionStartRuntimePayloadKeys
+	case eventType == "state.snapshot":
+		keys = snapshotRuntimePayloadKeys
+	case eventType == persistence.ArtifactEventType:
+		keys = artifactRuntimePayloadKeys
 	default:
 		return value
 	}
