@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/id"
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
@@ -60,7 +61,7 @@ ORDER BY event_seq ASC`, sessionID.String())
 		if err != nil {
 			return nil, fmt.Errorf("state %s has invalid root object id: %w", stateID, err)
 		}
-		parsed, err := parseSQLiteTime(created)
+		parsed, err := time.Parse(time.RFC3339Nano, created)
 		if err != nil {
 			return nil, fmt.Errorf("state %s has invalid created_at: %w", stateID, err)
 		}
