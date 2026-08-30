@@ -9,8 +9,16 @@ import (
 
 // ValidateObjectGraphs proves that every exported state is self-contained in the
 // archive and that every reachable typed object has the kind and declared sizes
-// required by the canonical tree/chunk-list model.
+// required by the canonical tree/chunk-list model. Full archive bundles also
+// validate immutable session, timeline, artifact, and branch-lineage evidence
+// before graph traversal; minimal graph-only fixtures may omit a manifest.
 func ValidateObjectGraphs(bundle Bundle) error {
+	if bundle.Manifest.Format != "" {
+		if err := validatePortableEvidence(bundle); err != nil {
+			return err
+		}
+	}
+
 	objects := make(map[store.ObjectID]store.Object, len(bundle.Objects))
 	for rawID, framed := range bundle.Objects {
 		id, err := store.ParseObjectID(rawID)
