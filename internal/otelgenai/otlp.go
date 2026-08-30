@@ -180,7 +180,7 @@ func (v *NanoTime) UnmarshalJSON(data []byte) error {
 }
 
 func StringValue(value string) AnyValue { return AnyValue{StringValue: &value} }
-func BoolValue(value bool) AnyValue      { return AnyValue{BoolValue: &value} }
+func BoolValue(value bool) AnyValue { return AnyValue{BoolValue: &value} }
 func IntValue(value int64) AnyValue {
 	converted := ProtoInt64(value)
 	return AnyValue{IntValue: &converted}
