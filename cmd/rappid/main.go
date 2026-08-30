@@ -38,6 +38,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runVerify(ctx, args[2:], stdout, stderr)
 	case "restore":
 		return runRestore(ctx, args[2:], stdout, stderr)
+	case "branch":
+		return runBranch(ctx, args[2:], stdout, stderr)
+	case "rerun":
+		return runRerun(ctx, args[2:], stdin, stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -391,7 +395,7 @@ func watchTerminalSize(parent context.Context, file *os.File, initial terminal.S
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: rappid replay <record|verify|restore> ...")
+	fmt.Fprintln(w, "Usage: rappid replay <record|verify|restore|branch|rerun> ...")
 }
 
 func printRecordUsage(w io.Writer) {
