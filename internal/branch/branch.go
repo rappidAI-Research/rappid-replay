@@ -151,8 +151,8 @@ func Rerun(ctx context.Context, deps Dependencies, options RerunOptions) (RerunR
 	}
 
 	result, err := record.Run(ctx, record.Dependencies{DB: deps.DB, CAS: deps.CAS, Adapters: deps.Adapters}, record.Options{
-		Command:             append([]string(nil), options.Command...),
-		WorkingDir:          branched.Destination,
+		Command:    append([]string(nil), options.Command...),
+		WorkingDir: branched.Destination,
 		// A branch workspace contains only files that were part of the selected
 		// evidence state. Do not apply today's project ignore configuration to
 		// the initial branch snapshot: doing so could silently drop historical
