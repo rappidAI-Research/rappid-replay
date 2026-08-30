@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/rappidAI-Research/rappid-replay/internal/id"
+	"github.com/rappidAI-Research/rappid-replay/internal/state"
+	"github.com/rappidAI-Research/rappid-replay/internal/store"
 )
 
 func TestValidateObjectGraphsRejectsMalformedEventEnvelope(t *testing.T) {
@@ -27,9 +29,9 @@ func TestValidateObjectGraphsRejectsMalformedEventEnvelope(t *testing.T) {
 }
 
 func TestValidateObjectGraphsRejectsBrokenBranchRoot(t *testing.T) {
-	parent := validTestBundle(t)
-	parentData := parent.Sessions[0]
-	parentDescriptor := parent.Manifest.Sessions[0]
+	bundle := validTestBundle(t)
+	parentData := bundle.Sessions[0]
+	parentDescriptor := bundle.Manifest.Sessions[0]
 
 	childSessionID, err := id.NewSession()
 	if err != nil {
@@ -61,24 +63,38 @@ func TestValidateObjectGraphsRejectsBrokenBranchRoot(t *testing.T) {
 	}
 	childData.Events = []json.RawMessage{encoded}
 
-	other := validTestBundle(t)
-	otherRoot := other.Sessions[0].States[0].RootTreeID
-	if otherRoot == parentData.States[0].RootTreeID {
-		t.Fatal("test fixture unexpectedly reused root object")
+	linkFrame, err := store.EncodeObject(store.ObjectLink, []byte("target"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	childData.States[0].RootTreeID = otherRoot
-	for objectID, framed := range other.Objects {
-		parent.Objects[objectID] = framed
+	linkID := store.SumObject(linkFrame)
+	treePayload, err := state.CanonicalBytes(state.NewTree([]state.Entry{{
+		Name:     []byte("link"),
+		Kind:     state.EntrySymlink,
+		Mode:     0o777,
+		Size:     int64(len("target")),
+		ObjectID: linkID,
+	}}))
+	if err != nil {
+		t.Fatal(err)
 	}
+	treeFrame, err := store.EncodeObject(store.ObjectTree, treePayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childRoot := store.SumObject(treeFrame)
+	childData.States[0].RootTreeID = childRoot.String()
+	bundle.Objects[linkID.String()] = linkFrame
+	bundle.Objects[childRoot.String()] = treeFrame
 
-	parent.Sessions = append(parent.Sessions, childData)
-	parent.Manifest.Sessions = append(parent.Manifest.Sessions, SessionDescriptor{
+	bundle.Sessions = append(bundle.Sessions, childData)
+	bundle.Manifest.Sessions = append(bundle.Manifest.Sessions, SessionDescriptor{
 		ID:              childSessionID.String(),
 		ParentSessionID: parentDescriptor.ID,
 		ForkEventSeq:    parentData.States[0].EventSeq,
 	})
 
-	if err := ValidateObjectGraphs(parent); err == nil || !strings.Contains(err.Error(), "differs from parent fork root") {
+	if err := ValidateObjectGraphs(bundle); err == nil || !strings.Contains(err.Error(), "differs from parent fork root") {
 		t.Fatalf("ValidateObjectGraphs() error = %v, want branch root mismatch", err)
 	}
 }
