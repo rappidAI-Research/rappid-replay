@@ -44,6 +44,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return runRerun(ctx, args[2:], stdin, stdout, stderr)
 	case "diff":
 		return runDiff(ctx, args[2:], stdout, stderr)
+	case "export":
+		return runExport(ctx, args[2:], stdout, stderr)
+	case "import":
+		return runImport(ctx, args[2:], stdout, stderr)
 	default:
 		printUsage(stderr)
 		return 2
@@ -195,6 +199,7 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	flags.SetOutput(stderr)
 	dataDir := flags.String("data-dir", "", "Replay local data directory")
 	jsonOutput := flags.Bool("json", false, "emit verification result as JSON")
+	archive := flags.Bool("archive", false, "verify a portable .rplay archive instead of a local state")
 	flags.Usage = func() { printVerifyUsage(stderr) }
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -202,6 +207,9 @@ func runVerify(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	if flags.NArg() != 1 {
 		printVerifyUsage(stderr)
 		return 2
+	}
+	if *archive {
+		return runArchiveVerify(flags.Arg(0), *jsonOutput, stdout, stderr)
 	}
 	stateID, err := id.ParseState(flags.Arg(0))
 	if err != nil {
@@ -397,7 +405,7 @@ func watchTerminalSize(parent context.Context, file *os.File, initial terminal.S
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: rappid replay <record|verify|restore|branch|rerun|diff> ...")
+	fmt.Fprintln(w, "Usage: rappid replay <record|verify|restore|branch|rerun|diff|export|import> ...")
 }
 
 func printRecordUsage(w io.Writer) {
@@ -406,6 +414,7 @@ func printRecordUsage(w io.Writer) {
 
 func printVerifyUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: rappid replay verify [--data-dir DIR] [--json] <state-id>")
+	fmt.Fprintln(w, "   or: rappid replay verify --archive [--json] <archive.rplay>")
 }
 
 func printRestoreUsage(w io.Writer) {
