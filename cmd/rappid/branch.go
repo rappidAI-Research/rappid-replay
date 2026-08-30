@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 
-	branchop "github.com/rappidAI-Research/rappid-replay/internal/branch"
 	"github.com/rappidAI-Research/rappid-replay/internal/app"
+	branchop "github.com/rappidAI-Research/rappid-replay/internal/branch"
 	"github.com/rappidAI-Research/rappid-replay/internal/id"
 	"github.com/rappidAI-Research/rappid-replay/internal/terminal"
 )
@@ -218,15 +218,15 @@ func runRerun(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 
 	if *jsonOutput {
 		payload := struct {
-			Mode             string `json:"mode"`
-			SourceStateID    string `json:"source_state_id"`
-			ParentSessionID  string `json:"parent_session_id"`
-			ForkEventSeq     uint64 `json:"fork_event_seq"`
-			Workspace        string `json:"workspace"`
-			SessionID        string `json:"session_id"`
-			InitialStateID   string `json:"initial_state_id"`
-			FinalStateID     string `json:"final_state_id"`
-			ExitCode         int    `json:"exit_code"`
+			Mode            string `json:"mode"`
+			SourceStateID   string `json:"source_state_id"`
+			ParentSessionID string `json:"parent_session_id"`
+			ForkEventSeq    uint64 `json:"fork_event_seq"`
+			Workspace       string `json:"workspace"`
+			SessionID       string `json:"session_id"`
+			InitialStateID  string `json:"initial_state_id"`
+			FinalStateID    string `json:"final_state_id"`
+			ExitCode        int    `json:"exit_code"`
 		}{
 			Mode: string(result.Mode), SourceStateID: result.Branch.Source.ID.String(),
 			ParentSessionID: result.Branch.Source.SessionID.String(), ForkEventSeq: result.Branch.Source.EventSeq,
