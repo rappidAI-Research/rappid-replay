@@ -15,7 +15,9 @@ type InspectableObjectStore interface {
 }
 
 // Inspection is a verified snapshot graph plus deterministic metadata for every
-// unique reachable CAS object. Objects is sorted by object ID.
+// unique reachable CAS object. Objects is sorted by object ID. Verification
+// counts are logical-path counts even when identical subtrees are deduplicated
+// to the same CAS object.
 type Inspection struct {
 	Verification Verification
 	Objects      []store.ObjectMetadata
@@ -32,9 +34,9 @@ func InspectSnapshot(cas InspectableObjectStore, root store.ObjectID) (Inspectio
 		return Inspection{}, fmt.Errorf("invalid root tree id: %w", err)
 	}
 
-	visited := make(map[store.ObjectID]struct{})
+	treeStats := make(map[store.ObjectID]Verification)
 	objects := make(map[store.ObjectID]store.ObjectMetadata)
-	verification, err := inspectTree(cas, root, visited, objects)
+	verification, err := inspectTree(cas, root, treeStats, objects)
 	if err != nil {
 		return Inspection{}, err
 	}
@@ -52,13 +54,12 @@ func InspectSnapshot(cas InspectableObjectStore, root store.ObjectID) (Inspectio
 func inspectTree(
 	cas InspectableObjectStore,
 	id store.ObjectID,
-	visited map[store.ObjectID]struct{},
+	treeStats map[store.ObjectID]Verification,
 	objects map[store.ObjectID]store.ObjectMetadata,
 ) (Verification, error) {
-	if _, ok := visited[id]; ok {
-		return Verification{}, nil
+	if cached, ok := treeStats[id]; ok {
+		return cached, nil
 	}
-	visited[id] = struct{}{}
 
 	obj, err := cas.GetObject(id)
 	if err != nil {
@@ -102,7 +103,7 @@ func inspectTree(
 			result.Symlinks++
 
 		case EntryDir:
-			childResult, err := inspectTree(cas, entry.ObjectID, visited, objects)
+			childResult, err := inspectTree(cas, entry.ObjectID, treeStats, objects)
 			if err != nil {
 				return Verification{}, err
 			}
@@ -116,6 +117,7 @@ func inspectTree(
 			return Verification{}, fmt.Errorf("unsupported tree entry kind %q", entry.Kind)
 		}
 	}
+	treeStats[id] = result
 	return result, nil
 }
 

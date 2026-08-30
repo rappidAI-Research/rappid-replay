@@ -6,8 +6,8 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/store"
 )
 
-// Verification describes the reachable, authenticated object graph rooted at a
-// snapshot tree.
+// Verification describes the logical workspace graph rooted at a snapshot tree
+// after all referenced CAS objects have been authenticated.
 type Verification struct {
 	Trees       int
 	Files       int
@@ -19,6 +19,10 @@ type Verification struct {
 // VerifySnapshot walks the Merkle tree, authenticates every CAS object through
 // ObjectStore.GetObject, enforces object-domain types, and re-validates canonical
 // tree and chunk-list serialization. It performs no filesystem writes.
+//
+// Object reads are memoized by content ID, while Verification counts remain
+// logical-path counts. If the same subtree object is referenced at two directory
+// paths, both paths therefore contribute to Files/Directories/FileBytes.
 func VerifySnapshot(cas ObjectStore, root store.ObjectID) (Verification, error) {
 	if cas == nil {
 		return Verification{}, fmt.Errorf("snapshot CAS is required")
@@ -26,17 +30,37 @@ func VerifySnapshot(cas ObjectStore, root store.ObjectID) (Verification, error) 
 	if _, err := store.ParseObjectID(root.String()); err != nil {
 		return Verification{}, fmt.Errorf("invalid root tree id: %w", err)
 	}
-	visited := make(map[store.ObjectID]struct{})
-	return verifyTree(cas, root, visited)
+	verifier := snapshotVerifier{
+		cas:       cas,
+		objects:   make(map[store.ObjectID]store.Object),
+		treeStats: make(map[store.ObjectID]Verification),
+	}
+	return verifier.verifyTree(root)
 }
 
-func verifyTree(cas ObjectStore, id store.ObjectID, visited map[store.ObjectID]struct{}) (Verification, error) {
-	if _, ok := visited[id]; ok {
-		return Verification{}, nil
-	}
-	visited[id] = struct{}{}
+type snapshotVerifier struct {
+	cas       ObjectStore
+	objects   map[store.ObjectID]store.Object
+	treeStats map[store.ObjectID]Verification
+}
 
-	obj, err := cas.GetObject(id)
+func (v *snapshotVerifier) getObject(id store.ObjectID) (store.Object, error) {
+	if cached, ok := v.objects[id]; ok {
+		return cached, nil
+	}
+	obj, err := v.cas.GetObject(id)
+	if err != nil {
+		return store.Object{}, err
+	}
+	v.objects[id] = obj
+	return obj, nil
+}
+
+func (v *snapshotVerifier) verifyTree(id store.ObjectID) (Verification, error) {
+	if cached, ok := v.treeStats[id]; ok {
+		return cached, nil
+	}
+	obj, err := v.getObject(id)
 	if err != nil {
 		return Verification{}, fmt.Errorf("load tree %s: %w", id, err)
 	}
@@ -52,14 +76,14 @@ func verifyTree(cas ObjectStore, id store.ObjectID, visited map[store.ObjectID]s
 	for _, entry := range tree.Entries {
 		switch entry.Kind {
 		case EntryFile:
-			if err := verifyFileObject(cas, entry.ObjectID, entry.Size); err != nil {
+			if err := v.verifyFileObject(entry.ObjectID, entry.Size); err != nil {
 				return Verification{}, err
 			}
 			result.Files++
 			result.FileBytes += entry.Size
 
 		case EntrySymlink:
-			child, err := cas.GetObject(entry.ObjectID)
+			child, err := v.getObject(entry.ObjectID)
 			if err != nil {
 				return Verification{}, fmt.Errorf("load link object %s: %w", entry.ObjectID, err)
 			}
@@ -72,7 +96,7 @@ func verifyTree(cas ObjectStore, id store.ObjectID, visited map[store.ObjectID]s
 			result.Symlinks++
 
 		case EntryDir:
-			childResult, err := verifyTree(cas, entry.ObjectID, visited)
+			childResult, err := v.verifyTree(entry.ObjectID)
 			if err != nil {
 				return Verification{}, err
 			}
@@ -86,11 +110,12 @@ func verifyTree(cas ObjectStore, id store.ObjectID, visited map[store.ObjectID]s
 			return Verification{}, fmt.Errorf("unsupported tree entry kind %q", entry.Kind)
 		}
 	}
+	v.treeStats[id] = result
 	return result, nil
 }
 
-func verifyFileObject(cas ObjectStore, id store.ObjectID, declaredSize int64) error {
-	child, err := cas.GetObject(id)
+func (v *snapshotVerifier) verifyFileObject(id store.ObjectID, declaredSize int64) error {
+	child, err := v.getObject(id)
 	if err != nil {
 		return fmt.Errorf("load file object %s: %w", id, err)
 	}
@@ -110,7 +135,7 @@ func verifyFileObject(cas ObjectStore, id store.ObjectID, declaredSize int64) er
 			return fmt.Errorf("chunk-list object %s size = %d, tree declares %d", id, list.Size, declaredSize)
 		}
 		for index, ref := range list.Chunks {
-			chunk, err := cas.GetObject(ref.ObjectID)
+			chunk, err := v.getObject(ref.ObjectID)
 			if err != nil {
 				return fmt.Errorf("load chunk %d %s: %w", index, ref.ObjectID, err)
 			}
