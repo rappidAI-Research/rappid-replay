@@ -31,5 +31,6 @@ Initial decisions are derived from the Architecture v1.0 baseline dated 27 Augus
 - ADR-026 — Adapter hooks are additive, privacy-filtered, and failure-isolated — **Accepted**
 - ADR-027 — Codex enrichment observes local rollout persistence without changing execution — **Accepted**
 - ADR-028 — Restore verifies first and commits a staged tree — **Accepted**
+- ADR-029 — Branch from an exact state and require explicit live-rerun consent — **Accepted**
 
 ADRs 007–011 remain defined by the Architecture v1.0 baseline and will be materialized when their implementation tracks are touched.
