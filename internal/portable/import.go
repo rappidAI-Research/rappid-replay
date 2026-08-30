@@ -17,11 +17,11 @@ import (
 )
 
 type VerifyArchiveResult struct {
-	Sessions int
-	States   int
-	Events   int
-	Artifacts int
-	Objects  int
+	Sessions  int `json:"sessions"`
+	States    int `json:"states"`
+	Events    int `json:"events"`
+	Artifacts int `json:"artifacts"`
+	Objects   int `json:"objects"`
 }
 
 type ImportResult struct {
@@ -156,11 +156,19 @@ func convertImportedSession(cas *store.LocalStore, portableSession replayformat.
 		}
 	}
 	result := persistence.ImportedSession{Record: persistence.SessionRecord{
-		ID: sessionID, ParentSessionID: parent, ForkEventSeq: metadata.ForkEventSeq,
-		Status: metadata.Status, Command: append([]string(nil), metadata.Command...), CWD: metadata.CWD,
-		StartedAt: metadata.StartedAt.UTC(), EndedAt: metadata.EndedAt.UTC(),
-		InitialStateID: initial, FinalStateID: final, ReproducibilityLevel: metadata.ReproducibilityLevel,
-		AdapterID: metadata.AdapterID, AdapterVersion: metadata.AdapterVersion,
+		ID:                   sessionID,
+		ParentSessionID:      parent,
+		ForkEventSeq:         metadata.ForkEventSeq,
+		Status:               metadata.Status,
+		Command:              append([]string(nil), metadata.Command...),
+		CWD:                  metadata.CWD,
+		StartedAt:            metadata.StartedAt.UTC(),
+		EndedAt:              metadata.EndedAt.UTC(),
+		InitialStateID:       initial,
+		FinalStateID:         final,
+		ReproducibilityLevel: metadata.ReproducibilityLevel,
+		AdapterID:            metadata.AdapterID,
+		AdapterVersion:       metadata.AdapterVersion,
 	}}
 	for index, raw := range portableSession.Events {
 		var persisted event.Event
@@ -191,7 +199,13 @@ func convertImportedSession(cas *store.LocalStore, portableSession replayformat.
 			reachable = append(reachable, object.ID)
 		}
 		result.States = append(result.States, persistence.ImportedState{
-			Record: persistence.StateRecord{ID: stateID, SessionID: stateSessionID, EventSeq: portableState.EventSeq, RootTreeID: rootID, CreatedAt: portableState.CreatedAt.UTC()},
+			Record: persistence.StateRecord{
+				ID:         stateID,
+				SessionID:  stateSessionID,
+				EventSeq:   portableState.EventSeq,
+				RootTreeID: rootID,
+				CreatedAt:  portableState.CreatedAt.UTC(),
+			},
 			Objects: reachable,
 		})
 	}
@@ -231,10 +245,19 @@ func convertImportedSession(cas *store.LocalStore, portableSession replayformat.
 			return persistence.ImportedSession{}, fmt.Errorf("artifact %s path: %w", artifactID, err)
 		}
 		result.Artifacts = append(result.Artifacts, persistence.ArtifactRecord{
-			ID: artifactID, SessionID: artifactSession, EventSeq: portableArtifact.EventSeq,
-			FromStateID: fromState, StateID: toState, Path: pathBytes, PathDisplay: portableArtifact.PathDisplay,
-			ChangeKind: persistence.ArtifactChangeKind(portableArtifact.ChangeKind), Discovery: portableArtifact.Discovery,
-			ObjectID: objectID, PreviousObjectID: previous, Mode: portableArtifact.Mode, Size: portableArtifact.Size,
+			ID:               artifactID,
+			SessionID:        artifactSession,
+			EventSeq:         portableArtifact.EventSeq,
+			FromStateID:      fromState,
+			StateID:          toState,
+			Path:             pathBytes,
+			PathDisplay:      portableArtifact.PathDisplay,
+			ChangeKind:       persistence.ArtifactChangeKind(portableArtifact.ChangeKind),
+			Discovery:        portableArtifact.Discovery,
+			ObjectID:         objectID,
+			PreviousObjectID: previous,
+			Mode:             portableArtifact.Mode,
+			Size:             portableArtifact.Size,
 		})
 	}
 	return result, nil
