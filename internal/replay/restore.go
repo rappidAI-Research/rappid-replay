@@ -329,7 +329,7 @@ func markCorruptState(ctx context.Context, db *persistence.DB, record persistenc
 	if !errors.Is(err, store.ErrCorruptObject) {
 		return err
 	}
-	if degradeErr := db.MarkSessionDegraded(ctx, record.SessionID, err.Error()); degradeErr != nil {
+	if degradeErr := db.MarkSessionIntegrityDegraded(ctx, record.SessionID, err.Error()); degradeErr != nil {
 		return fmt.Errorf("%w; additionally failed to mark session %s degraded: %v", err, record.SessionID, degradeErr)
 	}
 	return err
