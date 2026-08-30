@@ -15,13 +15,16 @@ import (
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
 )
 
-var volatilePayloadKeys = map[string]struct{}{
-	"pid":               {},
-	"ppid":              {},
-	"parent_pid":        {},
-	"root_pid":          {},
+var processRuntimePayloadKeys = map[string]struct{}{
+	"pid":        {},
+	"ppid":       {},
+	"parent_pid": {},
+	"root_pid":   {},
+	"cwd":        {},
+}
+
+var sessionStartRuntimePayloadKeys = map[string]struct{}{
 	"cwd":               {},
-	"session_id":        {},
 	"parent_session_id": {},
 	"fork_event_seq":    {},
 	"fork_state_id":     {},
@@ -44,7 +47,7 @@ func normalizeEvents(ctx context.Context, db *persistence.DB, events []event.Eve
 		if err != nil {
 			return nil, fmt.Errorf("resolve state_after for event %d: %w", item.Seq, err)
 		}
-		payload, err := normalizedPayload(item.Payload)
+		payload, err := normalizedPayload(item.Type, item.Payload)
 		if err != nil {
 			return nil, fmt.Errorf("normalize payload for event %d: %w", item.Seq, err)
 		}
@@ -61,13 +64,13 @@ func normalizeEvents(ctx context.Context, db *persistence.DB, events []event.Eve
 			Redacted:            item.Privacy.Redacted,
 		}
 		keyBytes, err := json.Marshal(struct {
-			Type        string          `json:"type"`
-			Source      string          `json:"source"`
-			BeforeRoot  string          `json:"before_root,omitempty"`
-			AfterRoot   string          `json:"after_root,omitempty"`
-			Payload     json.RawMessage `json:"payload"`
-			Privacy     string          `json:"privacy"`
-			Redacted    bool            `json:"redacted"`
+			Type       string          `json:"type"`
+			Source     string          `json:"source"`
+			BeforeRoot string          `json:"before_root,omitempty"`
+			AfterRoot  string          `json:"after_root,omitempty"`
+			Payload    json.RawMessage `json:"payload"`
+			Privacy    string          `json:"privacy"`
+			Redacted   bool            `json:"redacted"`
 		}{
 			Type: item.Type, Source: item.Source, BeforeRoot: beforeRoot, AfterRoot: afterRoot,
 			Payload: payload, Privacy: item.Privacy.Classification, Redacted: item.Privacy.Redacted,
@@ -87,6 +90,9 @@ func resolveStateRoot(ctx context.Context, db *persistence.DB, raw string, cache
 	if root, ok := cache[raw]; ok {
 		return root, nil
 	}
+	if db == nil {
+		return "", fmt.Errorf("state-bearing event requires Replay database")
+	}
 	stateID, err := id.ParseState(raw)
 	if err != nil {
 		return "", err
@@ -100,7 +106,7 @@ func resolveStateRoot(ctx context.Context, db *persistence.DB, raw string, cache
 	return root, nil
 }
 
-func normalizedPayload(raw json.RawMessage) (json.RawMessage, error) {
+func normalizedPayload(eventType string, raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
 		return json.RawMessage("null"), nil
 	}
@@ -117,7 +123,7 @@ func normalizedPayload(raw json.RawMessage) (json.RawMessage, error) {
 		}
 		return nil, err
 	}
-	value = scrubVolatilePayload(value)
+	value = scrubRuntimeIdentity(eventType, value)
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -125,26 +131,32 @@ func normalizedPayload(raw json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(encoded), nil
 }
 
-func scrubVolatilePayload(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		clean := make(map[string]any, len(typed))
-		for key, child := range typed {
-			if _, volatile := volatilePayloadKeys[key]; volatile {
-				continue
-			}
-			clean[key] = scrubVolatilePayload(child)
-		}
-		return clean
-	case []any:
-		clean := make([]any, len(typed))
-		for i, child := range typed {
-			clean[i] = scrubVolatilePayload(child)
-		}
-		return clean
+// scrubRuntimeIdentity removes only fields whose values are allocated by the
+// current Replay execution itself. The removal is deliberately event-specific
+// and top-level: arbitrary adapter/provider payloads keep fields named pid,
+// session_id, cwd, and similar because those can be meaningful evidence there.
+func scrubRuntimeIdentity(eventType string, value any) any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	var keys map[string]struct{}
+	switch {
+	case strings.HasPrefix(eventType, "process."):
+		keys = processRuntimePayloadKeys
+	case eventType == "session.started":
+		keys = sessionStartRuntimePayloadKeys
 	default:
 		return value
 	}
+	clean := make(map[string]any, len(object))
+	for key, child := range object {
+		if _, volatile := keys[key]; volatile {
+			continue
+		}
+		clean[key] = child
+	}
+	return clean
 }
 
 func compareTimeline(left, right []normalizedEvent) TimelineDiff {
