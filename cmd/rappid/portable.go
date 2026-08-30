@@ -65,7 +65,10 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	}
 	defer closeRuntime(runtime, stderr)
 	result, err := portable.ExportFile(ctx, portable.Dependencies{DB: runtime.DB, CAS: runtime.CAS}, portable.ExportOptions{
-		SessionID: sessionID, Path: target, Force: *force, SecretScan: scanMode,
+		SessionID:  sessionID,
+		Path:       target,
+		Force:      *force,
+		SecretScan: scanMode,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "rappid: export failed: %v\n", err)
@@ -82,11 +85,11 @@ func runExport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			ids = append(ids, item.String())
 		}
 		payload := struct {
-			Path          string   `json:"path"`
-			Sessions      []string `json:"sessions"`
-			States        int      `json:"states"`
-			Objects       int      `json:"objects"`
-			SecretFindings int     `json:"secret_findings"`
+			Path           string   `json:"path"`
+			Sessions       []string `json:"sessions"`
+			States         int      `json:"states"`
+			Objects        int      `json:"objects"`
+			SecretFindings int      `json:"secret_findings"`
 		}{Path: result.Path, Sessions: ids, States: result.States, Objects: result.Objects, SecretFindings: len(result.Findings)}
 		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
 			fmt.Fprintf(stderr, "rappid: encode JSON result: %v\n", err)
