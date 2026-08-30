@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
-	"github.com/rappidAI-Research/rappid-replay/internal/event"
 	"github.com/rappidAI-Research/rappid-replay/internal/id"
 	"github.com/rappidAI-Research/rappid-replay/internal/persistence"
 	"github.com/rappidAI-Research/rappid-replay/internal/privacy"
@@ -29,18 +27,18 @@ type Dependencies struct {
 }
 
 type ExportOptions struct {
-	SessionID id.SessionID
-	Path      string
-	Force     bool
+	SessionID  id.SessionID
+	Path       string
+	Force      bool
 	SecretScan string
 }
 
 type ExportResult struct {
-	Path      string
-	Sessions  []id.SessionID
-	States    int
-	Objects   int
-	Findings  []privacy.SecretFinding
+	Path     string
+	Sessions []id.SessionID
+	States   int
+	Objects  int
+	Findings []privacy.SecretFinding
 }
 
 // ExportFile exports the requested sealed session plus its complete ancestor
@@ -73,7 +71,9 @@ func ExportFile(ctx context.Context, deps Dependencies, opts ExportOptions) (Exp
 			return ExportResult{}, fmt.Errorf("session %s is still recording and cannot be exported", record.ID)
 		}
 		descriptors = append(descriptors, replayformat.SessionDescriptor{
-			ID: record.ID.String(), ParentSessionID: record.ParentSessionID.String(), ForkEventSeq: record.ForkEventSeq,
+			ID:              record.ID.String(),
+			ParentSessionID: record.ParentSessionID.String(),
+			ForkEventSeq:    record.ForkEventSeq,
 		})
 		data, objectData, sessionFindings, err := buildSessionData(ctx, deps, record, opts.SecretScan != "off")
 		if err != nil {
@@ -97,7 +97,12 @@ func ExportFile(ctx context.Context, deps Dependencies, opts ExportOptions) (Exp
 	if err := writeBundleAtomically(opts.Path, opts.Force, bundle); err != nil {
 		return ExportResult{}, err
 	}
-	result := ExportResult{Path: opts.Path, States: stateCount, Objects: len(bundle.Objects), Findings: findings}
+	result := ExportResult{
+		Path:     opts.Path,
+		States:   stateCount,
+		Objects:  len(bundle.Objects),
+		Findings: findings,
+	}
 	for _, record := range records {
 		result.Sessions = append(result.Sessions, record.ID)
 	}
@@ -123,11 +128,19 @@ func buildSessionData(ctx context.Context, deps Dependencies, record persistence
 	}
 
 	data := replayformat.SessionData{Metadata: replayformat.Session{
-		ID: record.ID.String(), ParentSessionID: record.ParentSessionID.String(), ForkEventSeq: record.ForkEventSeq,
-		Status: record.Status, Command: append([]string(nil), record.Command...), CWD: record.CWD,
-		StartedAt: record.StartedAt.UTC(), EndedAt: record.EndedAt.UTC(),
-		InitialStateID: record.InitialStateID.String(), FinalStateID: record.FinalStateID.String(),
-		ReproducibilityLevel: record.ReproducibilityLevel, AdapterID: record.AdapterID, AdapterVersion: record.AdapterVersion,
+		ID:                   record.ID.String(),
+		ParentSessionID:      record.ParentSessionID.String(),
+		ForkEventSeq:         record.ForkEventSeq,
+		Status:               record.Status,
+		Command:              append([]string(nil), record.Command...),
+		CWD:                  record.CWD,
+		StartedAt:            record.StartedAt.UTC(),
+		EndedAt:              record.EndedAt.UTC(),
+		InitialStateID:       record.InitialStateID.String(),
+		FinalStateID:         record.FinalStateID.String(),
+		ReproducibilityLevel: record.ReproducibilityLevel,
+		AdapterID:            record.AdapterID,
+		AdapterVersion:       record.AdapterVersion,
 	}}
 	findings := make([]privacy.SecretFinding, 0)
 	for _, persisted := range events {
@@ -137,9 +150,13 @@ func buildSessionData(ctx context.Context, deps Dependencies, record persistence
 		}
 		data.Events = append(data.Events, encoded)
 		if scan {
-			findings = privacy.MergeSecretFindings(findings, privacy.ScanExportBytes(fmt.Sprintf("session %s event %d", record.ID, persisted.Seq), encoded))
+			findings = privacy.MergeSecretFindings(
+				findings,
+				privacy.ScanExportBytes(fmt.Sprintf("session %s event %d", record.ID, persisted.Seq), encoded),
+			)
 		}
 	}
+
 	objectData := make(map[string][]byte)
 	for _, stateRecord := range states {
 		inspection, err := state.InspectSnapshot(deps.CAS, stateRecord.RootTreeID)
@@ -147,8 +164,11 @@ func buildSessionData(ctx context.Context, deps Dependencies, record persistence
 			return replayformat.SessionData{}, nil, nil, fmt.Errorf("inspect state %s before export: %w", stateRecord.ID, err)
 		}
 		data.States = append(data.States, replayformat.State{
-			ID: stateRecord.ID.String(), SessionID: stateRecord.SessionID.String(), EventSeq: stateRecord.EventSeq,
-			RootTreeID: stateRecord.RootTreeID.String(), CreatedAt: stateRecord.CreatedAt.UTC(),
+			ID:         stateRecord.ID.String(),
+			SessionID:  stateRecord.SessionID.String(),
+			EventSeq:   stateRecord.EventSeq,
+			RootTreeID: stateRecord.RootTreeID.String(),
+			CreatedAt:  stateRecord.CreatedAt.UTC(),
 		})
 		for _, metadata := range inspection.Objects {
 			if _, exists := objectData[metadata.ID.String()]; exists {
@@ -167,23 +187,38 @@ func buildSessionData(ctx context.Context, deps Dependencies, record persistence
 				if decodeErr != nil {
 					return replayformat.SessionData{}, nil, nil, fmt.Errorf("decode object %s for secret scan: %w", metadata.ID, decodeErr)
 				}
-				findings = privacy.MergeSecretFindings(findings, privacy.ScanExportBytes("object "+metadata.ID.String(), object.Payload))
+				findings = privacy.MergeSecretFindings(
+					findings,
+					privacy.ScanExportBytes("object "+metadata.ID.String(), object.Payload),
+				)
 			}
 		}
 	}
+
 	if hasEnvironment {
 		data.Environment = append(json.RawMessage(nil), environment...)
 		if scan {
-			findings = privacy.MergeSecretFindings(findings, privacy.ScanExportBytes("session "+record.ID.String()+" environment", environment))
+			findings = privacy.MergeSecretFindings(
+				findings,
+				privacy.ScanExportBytes("session "+record.ID.String()+" environment", environment),
+			)
 		}
 	}
 	for _, artifact := range artifacts {
 		data.Artifacts = append(data.Artifacts, replayformat.Artifact{
-			ID: artifact.ID.String(), SessionID: artifact.SessionID.String(), EventSeq: artifact.EventSeq,
-			FromStateID: artifact.FromStateID.String(), StateID: artifact.StateID.String(),
-			PathB64: base64.StdEncoding.EncodeToString(artifact.Path), PathDisplay: artifact.PathDisplay,
-			ChangeKind: string(artifact.ChangeKind), Discovery: artifact.Discovery,
-			ObjectID: artifact.ObjectID.String(), PreviousObjectID: artifact.PreviousObjectID.String(), Mode: artifact.Mode, Size: artifact.Size,
+			ID:               artifact.ID.String(),
+			SessionID:        artifact.SessionID.String(),
+			EventSeq:         artifact.EventSeq,
+			FromStateID:      artifact.FromStateID.String(),
+			StateID:          artifact.StateID.String(),
+			PathB64:          base64.StdEncoding.EncodeToString(artifact.Path),
+			PathDisplay:      artifact.PathDisplay,
+			ChangeKind:       string(artifact.ChangeKind),
+			Discovery:        artifact.Discovery,
+			ObjectID:         artifact.ObjectID.String(),
+			PreviousObjectID: artifact.PreviousObjectID.String(),
+			Mode:             artifact.Mode,
+			Size:             artifact.Size,
 		})
 	}
 	return data, objectData, findings, nil
@@ -228,6 +263,7 @@ func writeBundleAtomically(target string, force bool, bundle replayformat.Bundle
 	if exists && !force {
 		return fmt.Errorf("export target %q already exists; use --force to replace it", absolute)
 	}
+
 	temp, err := os.CreateTemp(filepath.Dir(absolute), "."+filepath.Base(absolute)+".rappid-export-")
 	if err != nil {
 		return fmt.Errorf("create export staging file: %w", err)
@@ -252,6 +288,7 @@ func writeBundleAtomically(target string, force bool, bundle replayformat.Bundle
 	if err := temp.Close(); err != nil {
 		return fmt.Errorf("close export staging file: %w", err)
 	}
+
 	if !exists {
 		if err := os.Rename(tempName, absolute); err != nil {
 			return fmt.Errorf("commit export: %w", err)
@@ -282,18 +319,4 @@ func validateDependencies(deps Dependencies) error {
 		return fmt.Errorf("Replay database and CAS are required")
 	}
 	return nil
-}
-
-func marshalEventForScan(persisted event.Event) []byte {
-	encoded, _ := json.Marshal(persisted)
-	return encoded
-}
-
-func sortedObjectIDs(objects map[string][]byte) []string {
-	ids := make([]string, 0, len(objects))
-	for objectID := range objects {
-		ids = append(ids, objectID)
-	}
-	sort.Strings(ids)
-	return ids
 }
