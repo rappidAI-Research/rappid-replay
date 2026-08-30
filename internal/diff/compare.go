@@ -110,12 +110,30 @@ func compareFinalStates(
 		case !leftMissing && rightMissing:
 			reason = "right_final_state_unavailable"
 		}
-		return StateDiff{
+		result := StateDiff{
 			Comparable:   false,
 			Reason:       reason,
 			LeftStateID:  leftSession.FinalStateID.String(),
 			RightStateID: rightSession.FinalStateID.String(),
-		}, "", "", nil
+		}
+		var leftRoot, rightRoot string
+		if !leftMissing {
+			verified, err := replay.VerifyState(ctx, replay.Dependencies{DB: deps.DB, CAS: deps.CAS}, leftSession.FinalStateID)
+			if err != nil {
+				return StateDiff{}, "", "", fmt.Errorf("verify left final state: %w", err)
+			}
+			leftRoot = verified.State.RootTreeID.String()
+			result.LeftRootTreeID = leftRoot
+		}
+		if !rightMissing {
+			verified, err := replay.VerifyState(ctx, replay.Dependencies{DB: deps.DB, CAS: deps.CAS}, rightSession.FinalStateID)
+			if err != nil {
+				return StateDiff{}, "", "", fmt.Errorf("verify right final state: %w", err)
+			}
+			rightRoot = verified.State.RootTreeID.String()
+			result.RightRootTreeID = rightRoot
+		}
+		return result, leftRoot, rightRoot, nil
 	}
 
 	leftVerified, err := replay.VerifyState(ctx, replay.Dependencies{DB: deps.DB, CAS: deps.CAS}, leftSession.FinalStateID)
@@ -221,6 +239,9 @@ func loadLineage(ctx context.Context, db *persistence.DB, start persistence.Sess
 		chain = append(chain, current)
 		if current.ParentSessionID == "" {
 			return chain, nil
+		}
+		if db == nil {
+			return nil, fmt.Errorf("session %s has parent lineage but Replay database is unavailable", current.ID)
 		}
 		parent, err := db.GetSession(ctx, current.ParentSessionID)
 		if err != nil {
