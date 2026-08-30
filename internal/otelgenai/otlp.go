@@ -19,7 +19,7 @@ const (
 	// snapshot used when this mapping was implemented. The upstream GenAI
 	// conventions are still Development and currently have no stable release.
 	CompatibilitySnapshot = "open-telemetry/semantic-conventions-genai@67dff024110be5bd9f318006e733f4078e0f4c97"
-	CoreSemconvVersion     = "1.44.0"
+	CoreSemconvVersion    = "1.44.0"
 
 	MaxDocumentBytes = 64 << 20
 	MaxSpans         = 100_000
@@ -180,7 +180,7 @@ func (v *NanoTime) UnmarshalJSON(data []byte) error {
 }
 
 func StringValue(value string) AnyValue { return AnyValue{StringValue: &value} }
-func BoolValue(value bool) AnyValue { return AnyValue{BoolValue: &value} }
+func BoolValue(value bool) AnyValue     { return AnyValue{BoolValue: &value} }
 func IntValue(value int64) AnyValue {
 	converted := ProtoInt64(value)
 	return AnyValue{IntValue: &converted}
