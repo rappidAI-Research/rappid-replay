@@ -72,15 +72,14 @@ func TestReadRejectsPathTraversalBeforeParsingArchiveData(t *testing.T) {
 func TestValidateArchiveEntrySetRejectsUnexpectedPayload(t *testing.T) {
 	bundle := validTestBundle(t)
 	manifest := bundle.Manifest
-	files := map[string]*zip.File{
-		ManifestPath: {},
-		ChecksumsPath: {},
-		"sessions/" + manifest.Sessions[0].ID + "/session.json":          {},
-		"sessions/" + manifest.Sessions[0].ID + "/events.ndjson.zst":    {},
-		"sessions/" + manifest.Sessions[0].ID + "/states.ndjson.zst":    {},
-		"sessions/" + manifest.Sessions[0].ID + "/artifacts.ndjson.zst": {},
-		"unexpected.bin": {},
-	}
+	files := make(map[string]*zip.File)
+	files[ManifestPath] = &zip.File{}
+	files[ChecksumsPath] = &zip.File{}
+	files["sessions/"+manifest.Sessions[0].ID+"/session.json"] = &zip.File{}
+	files["sessions/"+manifest.Sessions[0].ID+"/events.ndjson.zst"] = &zip.File{}
+	files["sessions/"+manifest.Sessions[0].ID+"/states.ndjson.zst"] = &zip.File{}
+	files["sessions/"+manifest.Sessions[0].ID+"/artifacts.ndjson.zst"] = &zip.File{}
+	files["unexpected.bin"] = &zip.File{}
 	if err := validateArchiveEntrySet(files, manifest); err == nil || !strings.Contains(err.Error(), "unexpected entry") {
 		t.Fatalf("validateArchiveEntrySet() error = %v", err)
 	}
