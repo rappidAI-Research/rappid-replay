@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"sort"
 	"strings"
@@ -19,15 +20,18 @@ import (
 )
 
 const (
-	maxArchiveEntries       = 250000
-	maxManifestBytes        = 4 << 20
-	maxSessionMetadataBytes = 4 << 20
-	maxEnvironmentBytes     = 16 << 20
-	maxCompressedListBytes  = 512 << 20
-	maxNDJSONLineBytes      = 8 << 20
-	maxObjectFrameBytes     = 64 << 20
-	maxChecksumsBytes       = 64 << 20
+	maxArchiveEntries           = 250000
+	maxArchiveUncompressedBytes = 64 << 30
+	maxManifestBytes            = 4 << 20
+	maxSessionMetadataBytes     = 4 << 20
+	maxEnvironmentBytes         = 16 << 20
+	maxCompressedListBytes      = 512 << 20
+	maxNDJSONLineBytes          = 8 << 20
+	maxObjectFrameBytes         = 64 << 20
+	maxChecksumsBytes           = 64 << 20
 )
+
+var archiveTimestamp = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // Write serializes a validated logical bundle as a deterministic ZIP64-capable
 // .rplay archive. Large event/state/artifact lists are zstd-compressed NDJSON.
@@ -38,12 +42,16 @@ func Write(dst io.Writer, bundle Bundle) error {
 	if err := validateBundle(bundle); err != nil {
 		return err
 	}
+	if err := ValidateObjectGraphs(bundle); err != nil {
+		return err
+	}
+
 	zw := zip.NewWriter(dst)
 	checksums := make(map[string]string)
 	writeEntry := func(name string, write func(io.Writer) error) error {
 		header := &zip.FileHeader{Name: name, Method: zip.Store}
 		header.SetMode(0o600)
-		header.SetModTime(time.Unix(0, 0).UTC())
+		header.SetModTime(archiveTimestamp)
 		entry, err := zw.CreateHeader(header)
 		if err != nil {
 			return fmt.Errorf("create archive entry %q: %w", name, err)
@@ -60,7 +68,10 @@ func Write(dst io.Writer, bundle Bundle) error {
 	if err != nil {
 		return fmt.Errorf("encode manifest: %w", err)
 	}
-	if err := writeEntry(ManifestPath, func(w io.Writer) error { _, err := w.Write(manifestBytes); return err }); err != nil {
+	if err := writeEntry(ManifestPath, func(w io.Writer) error {
+		_, err := w.Write(manifestBytes)
+		return err
+	}); err != nil {
 		return err
 	}
 
@@ -72,7 +83,10 @@ func Write(dst io.Writer, bundle Bundle) error {
 		if err != nil {
 			return fmt.Errorf("encode session %s metadata: %w", session.Metadata.ID, err)
 		}
-		if err := writeEntry(prefix+"session.json", func(w io.Writer) error { _, err := w.Write(metadata); return err }); err != nil {
+		if err := writeEntry(prefix+"session.json", func(w io.Writer) error {
+			_, err := w.Write(metadata)
+			return err
+		}); err != nil {
 			return err
 		}
 		if err := writeEntry(prefix+"events.ndjson.zst", func(w io.Writer) error {
@@ -80,6 +94,7 @@ func Write(dst io.Writer, bundle Bundle) error {
 		}); err != nil {
 			return err
 		}
+
 		stateLines := make([]json.RawMessage, 0, len(session.States))
 		for _, item := range session.States {
 			encoded, err := json.Marshal(item)
@@ -93,11 +108,16 @@ func Write(dst io.Writer, bundle Bundle) error {
 		}); err != nil {
 			return err
 		}
+
 		if len(session.Environment) != 0 {
-			if err := writeEntry(prefix+"environment.json", func(w io.Writer) error { _, err := w.Write(session.Environment); return err }); err != nil {
+			if err := writeEntry(prefix+"environment.json", func(w io.Writer) error {
+				_, err := w.Write(session.Environment)
+				return err
+			}); err != nil {
 				return err
 			}
 		}
+
 		artifactLines := make([]json.RawMessage, 0, len(session.Artifacts))
 		for _, item := range session.Artifacts {
 			encoded, err := json.Marshal(item)
@@ -121,7 +141,10 @@ func Write(dst io.Writer, bundle Bundle) error {
 	for _, id := range objectIDs {
 		framed := bundle.Objects[id]
 		name := objectPath(id)
-		if err := writeEntry(name, func(w io.Writer) error { _, err := w.Write(framed); return err }); err != nil {
+		if err := writeEntry(name, func(w io.Writer) error {
+			_, err := w.Write(framed)
+			return err
+		}); err != nil {
 			return err
 		}
 	}
@@ -137,7 +160,7 @@ func Write(dst io.Writer, bundle Bundle) error {
 	}
 	header := &zip.FileHeader{Name: ChecksumsPath, Method: zip.Store}
 	header.SetMode(0o600)
-	header.SetModTime(time.Unix(0, 0).UTC())
+	header.SetModTime(archiveTimestamp)
 	entry, err := zw.CreateHeader(header)
 	if err != nil {
 		return fmt.Errorf("create checksums entry: %w", err)
@@ -152,7 +175,8 @@ func Write(dst io.Writer, bundle Bundle) error {
 }
 
 // Read validates archive paths, BLAKE3 entry checksums, manifest compatibility,
-// typed-object identities, and structured session entries before returning data.
+// typed-object identities, complete state graphs, and structured session entries
+// before returning data.
 func Read(src io.ReaderAt, size int64) (Bundle, error) {
 	if src == nil || size <= 0 {
 		return Bundle{}, fmt.Errorf("archive source is required")
@@ -164,19 +188,26 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 	if len(zr.File) == 0 || len(zr.File) > maxArchiveEntries {
 		return Bundle{}, fmt.Errorf("archive entry count %d is outside supported bounds", len(zr.File))
 	}
+
 	files := make(map[string]*zip.File, len(zr.File))
+	var totalUncompressed uint64
 	for _, file := range zr.File {
 		if err := validateArchivePath(file.Name); err != nil {
 			return Bundle{}, err
 		}
-		if file.FileInfo().IsDir() || file.Mode()&io.ModeSymlink != 0 {
+		if file.FileInfo().IsDir() || file.Mode()&fs.ModeSymlink != 0 || !file.Mode().IsRegular() {
 			return Bundle{}, fmt.Errorf("archive entry %q must be a regular file", file.Name)
 		}
 		if _, exists := files[file.Name]; exists {
 			return Bundle{}, fmt.Errorf("archive contains duplicate entry %q", file.Name)
 		}
+		if file.UncompressedSize64 > uint64(maxArchiveUncompressedBytes)-totalUncompressed {
+			return Bundle{}, fmt.Errorf("archive exceeds %d-byte uncompressed limit", maxArchiveUncompressedBytes)
+		}
+		totalUncompressed += file.UncompressedSize64
 		files[file.Name] = file
 	}
+
 	checksumFile, ok := files[ChecksumsPath]
 	if !ok {
 		return Bundle{}, fmt.Errorf("archive is missing %s", ChecksumsPath)
@@ -225,6 +256,9 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 	if err := ValidateManifest(manifest); err != nil {
 		return Bundle{}, err
 	}
+	if err := validateArchiveEntrySet(files, manifest); err != nil {
+		return Bundle{}, err
+	}
 
 	bundle := Bundle{Manifest: manifest, Objects: make(map[string][]byte)}
 	for _, descriptor := range manifest.Sessions {
@@ -240,6 +274,7 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 		if metadata.ID != descriptor.ID || metadata.ParentSessionID != descriptor.ParentSessionID || metadata.ForkEventSeq != descriptor.ForkEventSeq {
 			return Bundle{}, fmt.Errorf("session %s metadata does not match manifest lineage", descriptor.ID)
 		}
+
 		eventLines, err := readZstdNDJSONRequired(files, prefix+"events.ndjson.zst")
 		if err != nil {
 			return Bundle{}, err
@@ -256,6 +291,7 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 			}
 			states = append(states, item)
 		}
+
 		artifactLines, err := readZstdNDJSONRequired(files, prefix+"artifacts.ndjson.zst")
 		if err != nil {
 			return Bundle{}, err
@@ -268,6 +304,7 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 			}
 			artifacts = append(artifacts, item)
 		}
+
 		var environment json.RawMessage
 		if file, ok := files[prefix+"environment.json"]; ok {
 			value, err := readZipFile(file, maxEnvironmentBytes)
@@ -280,14 +317,20 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 			environment = append(json.RawMessage(nil), value...)
 		}
 		bundle.Sessions = append(bundle.Sessions, SessionData{
-			Metadata: metadata, Events: eventLines, States: states,
-			Environment: environment, Artifacts: artifacts,
+			Metadata:    metadata,
+			Events:      eventLines,
+			States:      states,
+			Environment: environment,
+			Artifacts:   artifacts,
 		})
 	}
 
 	for name, file := range files {
-		if !strings.HasPrefix(name, "objects/") || !strings.HasSuffix(name, ".rpobj") {
+		if !strings.HasPrefix(name, "objects/") {
 			continue
+		}
+		if !strings.HasSuffix(name, ".rpobj") {
+			return Bundle{}, fmt.Errorf("unexpected object archive entry %q", name)
 		}
 		digest := strings.TrimSuffix(strings.TrimPrefix(name, "objects/"), ".rpobj")
 		idText := "b3:" + digest
@@ -310,6 +353,9 @@ func Read(src io.ReaderAt, size int64) (Bundle, error) {
 	if err := validateBundle(bundle); err != nil {
 		return Bundle{}, err
 	}
+	if err := ValidateObjectGraphs(bundle); err != nil {
+		return Bundle{}, err
+	}
 	return bundle, nil
 }
 
@@ -320,12 +366,13 @@ func validateBundle(bundle Bundle) error {
 	if len(bundle.Sessions) != len(bundle.Manifest.Sessions) {
 		return fmt.Errorf("bundle session count = %d, manifest declares %d", len(bundle.Sessions), len(bundle.Manifest.Sessions))
 	}
+
 	descriptors := make(map[string]SessionDescriptor, len(bundle.Manifest.Sessions))
 	for _, item := range bundle.Manifest.Sessions {
 		descriptors[item.ID] = item
 	}
 	seenSessions := make(map[string]struct{}, len(bundle.Sessions))
-	stateIDs := make(map[string]State)
+	allStates := make(map[string]State)
 	for _, session := range bundle.Sessions {
 		descriptor, ok := descriptors[session.Metadata.ID]
 		if !ok {
@@ -341,6 +388,9 @@ func validateBundle(bundle Bundle) error {
 		if len(session.Metadata.Command) == 0 || session.Metadata.Command[0] == "" {
 			return fmt.Errorf("session %s has empty command", session.Metadata.ID)
 		}
+		if session.Metadata.CWD == "" || session.Metadata.StartedAt.IsZero() {
+			return fmt.Errorf("session %s has incomplete metadata", session.Metadata.ID)
+		}
 		if session.Metadata.Status == "recording" || session.Metadata.Status == "" {
 			return fmt.Errorf("session %s is not sealed", session.Metadata.ID)
 		}
@@ -349,24 +399,44 @@ func validateBundle(bundle Bundle) error {
 				return fmt.Errorf("session %s event line %d is invalid JSON", session.Metadata.ID, i+1)
 			}
 		}
-		for _, state := range session.States {
-			if state.ID == "" || state.SessionID != session.Metadata.ID || state.EventSeq == 0 || state.RootTreeID == "" || state.CreatedAt.IsZero() {
+		for _, item := range session.States {
+			if item.ID == "" || item.SessionID != session.Metadata.ID || item.EventSeq == 0 || item.RootTreeID == "" || item.CreatedAt.IsZero() {
 				return fmt.Errorf("session %s contains invalid state metadata", session.Metadata.ID)
 			}
-			if _, exists := stateIDs[state.ID]; exists {
-				return fmt.Errorf("duplicate state id %s", state.ID)
+			if _, exists := allStates[item.ID]; exists {
+				return fmt.Errorf("duplicate state id %s", item.ID)
 			}
-			stateIDs[state.ID] = state
-			if _, ok := bundle.Objects[state.RootTreeID]; !ok {
-				return fmt.Errorf("state %s references missing root object %s", state.ID, state.RootTreeID)
+			allStates[item.ID] = item
+			if _, ok := bundle.Objects[item.RootTreeID]; !ok {
+				return fmt.Errorf("state %s references missing root object %s", item.ID, item.RootTreeID)
 			}
 		}
 		if len(session.Environment) != 0 && !json.Valid(session.Environment) {
 			return fmt.Errorf("session %s environment is invalid JSON", session.Metadata.ID)
 		}
+	}
+
+	for _, session := range bundle.Sessions {
+		if session.Metadata.InitialStateID != "" {
+			stateRecord, ok := allStates[session.Metadata.InitialStateID]
+			if !ok || stateRecord.SessionID != session.Metadata.ID {
+				return fmt.Errorf("session %s initial state %s is missing or foreign", session.Metadata.ID, session.Metadata.InitialStateID)
+			}
+		}
+		if session.Metadata.FinalStateID != "" {
+			stateRecord, ok := allStates[session.Metadata.FinalStateID]
+			if !ok || stateRecord.SessionID != session.Metadata.ID {
+				return fmt.Errorf("session %s final state %s is missing or foreign", session.Metadata.ID, session.Metadata.FinalStateID)
+			}
+		}
 		for _, artifact := range session.Artifacts {
 			if artifact.ID == "" || artifact.SessionID != session.Metadata.ID || artifact.EventSeq == 0 || artifact.StateID == "" || artifact.FromStateID == "" || artifact.ObjectID == "" {
 				return fmt.Errorf("session %s contains invalid artifact metadata", session.Metadata.ID)
+			}
+			fromState, fromOK := allStates[artifact.FromStateID]
+			toState, toOK := allStates[artifact.StateID]
+			if !fromOK || !toOK || fromState.SessionID != session.Metadata.ID || toState.SessionID != session.Metadata.ID {
+				return fmt.Errorf("artifact %s references missing or foreign state", artifact.ID)
 			}
 			if _, ok := bundle.Objects[artifact.ObjectID]; !ok {
 				return fmt.Errorf("artifact %s references missing object %s", artifact.ID, artifact.ObjectID)
@@ -378,6 +448,7 @@ func validateBundle(bundle Bundle) error {
 			}
 		}
 	}
+
 	for id, framed := range bundle.Objects {
 		parsed, err := store.ParseObjectID(id)
 		if err != nil {
@@ -388,6 +459,30 @@ func validateBundle(bundle Bundle) error {
 		}
 		if _, err := store.DecodeObject(framed); err != nil {
 			return fmt.Errorf("bundle object %s is invalid: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func validateArchiveEntrySet(files map[string]*zip.File, manifest Manifest) error {
+	allowed := map[string]struct{}{
+		ManifestPath:  {},
+		ChecksumsPath: {},
+	}
+	for _, descriptor := range manifest.Sessions {
+		prefix := "sessions/" + descriptor.ID + "/"
+		allowed[prefix+"session.json"] = struct{}{}
+		allowed[prefix+"events.ndjson.zst"] = struct{}{}
+		allowed[prefix+"states.ndjson.zst"] = struct{}{}
+		allowed[prefix+"artifacts.ndjson.zst"] = struct{}{}
+		allowed[prefix+"environment.json"] = struct{}{}
+	}
+	for name := range files {
+		if strings.HasPrefix(name, "objects/") {
+			continue
+		}
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("archive contains unexpected entry %q", name)
 		}
 	}
 	return nil
@@ -429,6 +524,7 @@ func readZstdNDJSONRequired(files map[string]*zip.File, name string) ([]json.Raw
 		return nil, fmt.Errorf("open zstd entry %q: %w", name, err)
 	}
 	defer decoder.Close()
+
 	scanner := bufio.NewScanner(io.LimitReader(decoder, maxCompressedListBytes+1))
 	scanner.Buffer(make([]byte, 64<<10), maxNDJSONLineBytes)
 	lines := make([]json.RawMessage, 0)
@@ -459,7 +555,7 @@ func readRequired(files map[string]*zip.File, name string, limit int64) ([]byte,
 }
 
 func readZipFile(file *zip.File, limit int64) ([]byte, error) {
-	if int64(file.UncompressedSize64) > limit {
+	if file.UncompressedSize64 > uint64(limit) {
 		return nil, fmt.Errorf("archive entry %q exceeds %d-byte limit", file.Name, limit)
 	}
 	r, err := file.Open()
