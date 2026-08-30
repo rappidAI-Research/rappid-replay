@@ -44,7 +44,7 @@ func validateImportedEvidence(objects []store.ObjectMetadata, sessions []Importe
 		if err := validateImportedSessionRecord(record); err != nil {
 			return err
 		}
-		if len(imported.Events) >= int(maxSQLiteInteger) {
+		if uint64(len(imported.Events)) >= maxSQLiteInteger {
 			return fmt.Errorf("session %s has too many events", record.ID)
 		}
 
@@ -108,6 +108,10 @@ func validateImportedEvidence(objects []store.ObjectMetadata, sessions []Importe
 				return fmt.Errorf("state %s reachability omits root object %s", stateRecord.ID, stateRecord.RootTreeID)
 			}
 		}
+
+		if err := validateImportedEventStateOwnership(imported.Events, localStates, record.ID); err != nil {
+			return err
+		}
 		if record.InitialStateID != "" {
 			if _, ok := localStates[record.InitialStateID]; !ok {
 				return fmt.Errorf("session %s initial state %s is not imported with the session", record.ID, record.InitialStateID)
@@ -160,6 +164,27 @@ func validateImportedEvidence(objects []store.ObjectMetadata, sessions []Importe
 				if _, ok := objectSet[artifact.PreviousObjectID]; !ok {
 					return fmt.Errorf("artifact %s references uncatalogued previous object %s", artifact.ID, artifact.PreviousObjectID)
 				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateImportedEventStateOwnership(events []event.Event, localStates map[id.StateID]struct{}, sessionID id.SessionID) error {
+	for _, persisted := range events {
+		for label, rawStateID := range map[string]string{
+			"state_before": persisted.StateBefore,
+			"state_after":  persisted.StateAfter,
+		} {
+			if rawStateID == "" {
+				continue
+			}
+			stateID, err := id.ParseState(rawStateID)
+			if err != nil {
+				return fmt.Errorf("session %s event %d has invalid %s: %w", sessionID, persisted.Seq, label, err)
+			}
+			if _, ok := localStates[stateID]; !ok {
+				return fmt.Errorf("session %s event %d %s %s does not belong to the session", sessionID, persisted.Seq, label, stateID)
 			}
 		}
 	}
@@ -225,10 +250,7 @@ func validateImportedEvent(persisted event.Event) error {
 		return nil
 	}
 	if persisted.Type == ArtifactEventType {
-		if err := validateEventDraft(draft, persisted.MonotonicNS); err != nil {
-			return err
-		}
-		return nil
+		return validateEventDraft(draft, persisted.MonotonicNS)
 	}
 	return validateEventDraft(draft, persisted.MonotonicNS)
 }
