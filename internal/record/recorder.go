@@ -33,7 +33,9 @@ type Dependencies struct {
 // Options describes a generic child command recording. PTY enables a real
 // pseudo-terminal rather than the non-interactive stdout/stderr pipe fallback.
 // Full input capture is only legal with PTY because the pipe recorder cannot
-// provide interactive terminal semantics.
+// provide interactive terminal semantics. Branch lineage is all-or-nothing and
+// requires ExpectedInitialRoot so a rerun cannot silently start from a workspace
+// that differs from the selected historical state.
 type Options struct {
 	Command             []string
 	WorkingDir          string
@@ -46,6 +48,10 @@ type Options struct {
 	Stdout              io.Writer
 	Stderr              io.Writer
 	Env                 []string
+	ParentSessionID     id.SessionID
+	ForkEventSeq        uint64
+	ForkStateID         id.StateID
+	ExpectedInitialRoot store.ObjectID
 }
 
 // Result identifies the durable session and its state boundary after recording.
@@ -77,6 +83,20 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	if len(options.Command) == 0 || options.Command[0] == "" {
 		return Result{}, fmt.Errorf("record command is required")
 	}
+
+	hasParent := options.ParentSessionID != ""
+	hasForkSeq := options.ForkEventSeq != 0
+	hasForkState := options.ForkStateID != ""
+	hasExpectedRoot := options.ExpectedInitialRoot != ""
+	if hasParent != hasForkSeq || hasParent != hasForkState || hasParent != hasExpectedRoot {
+		return Result{}, fmt.Errorf("branched recording requires parent session, fork event sequence, fork state, and expected initial root together")
+	}
+	if hasExpectedRoot {
+		if _, err := store.ParseObjectID(options.ExpectedInitialRoot.String()); err != nil {
+			return Result{}, fmt.Errorf("invalid expected initial root: %w", err)
+		}
+	}
+
 	if options.TerminalInput == "" {
 		options.TerminalInput = "metadata-only"
 	}
@@ -137,6 +157,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		ReproducibilityLevel: "R0",
 		AdapterID:            adapterSelection.Descriptor.ID,
 		AdapterVersion:       adapterSelection.Descriptor.Version,
+		ParentSessionID:      options.ParentSessionID,
+		ForkEventSeq:         options.ForkEventSeq,
+		ForkStateID:          options.ForkStateID,
 	}); err != nil {
 		return result, err
 	}
@@ -152,6 +175,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		PTY                bool                 `json:"pty"`
 		TerminalInput      string               `json:"terminal_input"`
 		StdinAttached      bool                 `json:"stdin_attached"`
+		ParentSessionID    string               `json:"parent_session_id,omitempty"`
+		ForkEventSeq       uint64               `json:"fork_event_seq,omitempty"`
+		ForkStateID        string               `json:"fork_state_id,omitempty"`
 	}{
 		Command:            recordedCommand,
 		CWD:                absWorkingDir,
@@ -162,6 +188,9 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 		PTY:                options.PTY,
 		TerminalInput:      options.TerminalInput,
 		StdinAttached:      options.Stdin != nil,
+		ParentSessionID:    options.ParentSessionID.String(),
+		ForkEventSeq:       options.ForkEventSeq,
+		ForkStateID:        options.ForkStateID.String(),
 	}, commandRedacted); err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", err)
 	}
@@ -176,6 +205,12 @@ func Run(ctx context.Context, deps Dependencies, options Options) (Result, error
 	initialSnapshot, err := captureWithRetry(ctx, snapshotter, absWorkingDir)
 	if err != nil {
 		return result, abortWithError(context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "", fmt.Errorf("capture initial workspace state: %w", err))
+	}
+	if options.ExpectedInitialRoot != "" && initialSnapshot.RootTreeID != options.ExpectedInitialRoot {
+		return result, abortWithError(
+			context.WithoutCancel(ctx), deps.DB, sink, clock, sessionID, "",
+			fmt.Errorf("branched workspace root %s does not match selected source root %s", initialSnapshot.RootTreeID, options.ExpectedInitialRoot),
+		)
 	}
 	initialStateID, err := id.NewState()
 	if err != nil {
