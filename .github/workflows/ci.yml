@@ -33,7 +33,6 @@ jobs:
       - name: Format check
         shell: bash
         run: |
-          gofmt -d internal/otelgenai/otlp.go || true
           test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: Vet
         run: go vet ./...
