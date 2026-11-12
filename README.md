@@ -20,7 +20,7 @@ Only **live** rerun is implemented. `recorded`, `controlled`, and `hybrid` modes
 
 ## Local setup
 
-Use Go 1.27 or newer, matching `go.mod`. No tagged release or prebuilt release
+Use the latest patched Go 1.27 release (currently 1.27.4) or newer, matching `go.mod`. No tagged release or prebuilt release
 binary is published; build the current source locally:
 
 ```sh

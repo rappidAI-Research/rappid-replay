@@ -4,7 +4,7 @@ Replay is experimental software. Read the [README](README.md),
 [architecture decisions](docs/adr/README.md) and [adapter SDK](docs/adapter-sdk.md)
 before changing recording, restore or rerun behavior.
 
-Use Go 1.27 or newer, as required by `go.mod`. From the repository root:
+Use the latest patched Go 1.27 release (currently 1.27.4) or newer, as required by `go.mod`. From the repository root:
 
 ```sh
 go mod download
