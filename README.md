@@ -18,6 +18,23 @@ The current CLI also implements [authenticated state verification and staged res
 
 Only **live** rerun is implemented. `recorded`, `controlled`, and `hybrid` modes fail closed; external-I/O cassettes and stronger reproducibility levels remain future work. No `.rplay` package, local UI, or optional intelligence layer is claimed as implemented on main.
 
+## Local setup
+
+Use Go 1.27 or newer, matching `go.mod`. No tagged release or prebuilt release
+binary is published; build the current source locally:
+
+```sh
+git clone https://github.com/rappidAI-Research/rappid-replay.git
+cd rappid-replay
+go mod download
+go build -o bin/rappid ./cmd/rappid
+./bin/rappid replay --help
+```
+
+The commands below use `go run` from this checkout. See
+[contribution instructions](CONTRIBUTING.md), [security reporting](SECURITY.md)
+and the [rappidAI Research tool page](https://www.rappidai-research.com/tools/replay).
+
 ## Recording a command
 
 ```sh
