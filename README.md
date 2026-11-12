@@ -28,7 +28,6 @@ git clone https://github.com/rappidAI-Research/rappid-replay.git
 cd rappid-replay
 go mod download
 go build -o bin/rappid ./cmd/rappid
-./bin/rappid replay --help
 ```
 
 The commands below use `go run` from this checkout. See
